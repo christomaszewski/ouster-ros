@@ -2,6 +2,10 @@
 Changelog
 =========
 
+[UNRELEASED]
+============
+* improve scan_to_cloud_f efficiency by avoiding the modulo in a tight loop.
+
 ouster_ros v0.15.0
 ==================
 * [BUGIX] fix improper scaling of mask image when row step is not 1.
