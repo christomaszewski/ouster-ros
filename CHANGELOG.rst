@@ -4,7 +4,8 @@ Changelog
 
 [UNRELEASED]
 ============
-* improve scan_to_cloud_f efficiency by avoiding the modulo in a tight loop.
+* Improve scan_to_cloud_f efficiency by avoiding the modulo in a tight loop.
+  - Backport negative-shift normalization and metadata validation with the optimization.
 
 ouster_ros v0.15.0
 ==================
