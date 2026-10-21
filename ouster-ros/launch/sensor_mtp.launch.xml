@@ -103,7 +103,12 @@
     setting this parameter to False."/>
 
   <arg name="use_system_default_qos" default="false"
-    description="Use the default system QoS settings"/>
+    description="Use system-default QoS for processed output topics only"/>
+
+  <arg name="raw_packet_qos_depth" default="1024"
+    description="Raw packet keep-last queue depth, from 1 to 65536"/>
+  <arg name="raw_packet_qos_reliability" default="reliable"
+    description="Raw packet reliability: reliable or best_effort"/>
 
   <arg name="proc_mask" default="IMG|PCL|IMU|SCAN|TLM"
     description="Use any combination of the 4 flags to enable or disable specific processors"/>
@@ -204,6 +209,8 @@
       <param name="timestamp_mode" value="$(var timestamp_mode)"/>
       <param name="ptp_utc_tai_offset" value="$(var ptp_utc_tai_offset)"/>
       <param name="use_system_default_qos" value="$(var use_system_default_qos)"/>
+      <param name="raw_packet_qos_depth" value="$(var raw_packet_qos_depth)"/>
+      <param name="raw_packet_qos_reliability" value="$(var raw_packet_qos_reliability)"/>
       <param name="proc_mask" value="$(var proc_mask)"/>
       <param name="scan_ring" value="$(var scan_ring)"/>
       <param name="point_type" value="$(var point_type)"/>

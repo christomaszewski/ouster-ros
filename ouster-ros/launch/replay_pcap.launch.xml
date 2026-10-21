@@ -44,7 +44,12 @@
   <let name="_use_metadata_file" value="$(eval '\'$(var metadata)\' != \'\'')"/>
 
   <arg name="use_system_default_qos" default="true"
-    description="Use the default system QoS settings"/>
+    description="Use system-default QoS for processed output topics only"/>
+
+  <arg name="raw_packet_qos_depth" default="1024"
+    description="Raw packet keep-last queue depth, from 1 to 65536"/>
+  <arg name="raw_packet_qos_reliability" default="reliable"
+    description="Raw packet reliability: reliable or best_effort"/>
 
   <arg name="proc_mask" default="IMG|PCL|IMU|SCAN" description="
     use any combination of the 4 flags to enable or disable specific processors"/>
@@ -94,6 +99,8 @@
       <param name="loop" value="$(var loop)"/>
       <param name="progress_update_freq" value="$(var progress_update_freq)"/>
       <param name="use_system_default_qos" value="$(var use_system_default_qos)"/>
+      <param name="raw_packet_qos_depth" value="$(var raw_packet_qos_depth)"/>
+      <param name="raw_packet_qos_reliability" value="$(var raw_packet_qos_reliability)"/>
     </node>
     <node_container pkg="rclcpp_components" exec="component_container_mt" name="os_container" output="screen" namespace="">
       <composable_node pkg="ouster_ros" plugin="ouster_ros::OusterCloud" name="os_cloud">
@@ -105,6 +112,8 @@
         <param name="timestamp_mode" value="$(var timestamp_mode)"/>
         <param name="ptp_utc_tai_offset" value="$(var ptp_utc_tai_offset)"/>
         <param name="use_system_default_qos" value="$(var use_system_default_qos)"/>
+        <param name="raw_packet_qos_depth" value="$(var raw_packet_qos_depth)"/>
+        <param name="raw_packet_qos_reliability" value="$(var raw_packet_qos_reliability)"/>
         <param name="proc_mask" value="$(var proc_mask)"/>
         <param name="scan_ring" value="$(var scan_ring)"/>
         <param name="point_type" value="$(var point_type)"/>
@@ -118,6 +127,8 @@
       </composable_node>
       <composable_node pkg="ouster_ros" plugin="ouster_ros::OusterImage" name="os_image">
         <param name="use_system_default_qos" value="$(var use_system_default_qos)"/>
+        <param name="raw_packet_qos_depth" value="$(var raw_packet_qos_depth)"/>
+        <param name="raw_packet_qos_reliability" value="$(var raw_packet_qos_reliability)"/>
         <param name="proc_mask" value="$(var proc_mask)"/>
         <param name="mask_path" value="$(var mask_path)"/>
       </composable_node>

@@ -6,9 +6,6 @@
   <arg name="play_delay" default="0" description="playback start delay in seconds"/>
   <arg name="play_rate" default="1.0"/>
 
-  <let if="$(var loop)" name="_loop" value="--loop"/>
-  <let unless="$(var loop)" name="_loop" value=" "/>
-
   <arg name="ouster_ns" default="ouster"
     description="Override the default namespace of all ouster nodes"/>
   <!-- TODO: revisit the proper behaviour of allowing users override the default timestamp_mode during replay -->
@@ -25,6 +22,8 @@
     description="path to write metadata file when receiving sensor data"/>
   <arg name="bag_file"
     description="file name to use for the recorded bag file"/>
+  <arg name="qos_profile_overrides_path" default=""
+    description="Optional rosbag QoS YAML; empty generates raw and metadata profiles for ouster_ns"/>
   <arg name="viz" default="true"
     description="whether to run a rviz"/>
   <arg name="rviz_config" default="$(find-pkg-share ouster_ros)/config/viz-reliable.rviz"
@@ -48,7 +47,12 @@
   <let name="_use_metadata_file" value="$(eval '\'$(var metadata)\' != \'\'')"/>
 
   <arg name="use_system_default_qos" default="true"
-    description="Use the default system QoS settings"/>
+    description="Use system-default QoS for processed output topics only"/>
+
+  <arg name="raw_packet_qos_depth" default="1024"
+    description="Raw packet keep-last queue depth, from 1 to 65536"/>
+  <arg name="raw_packet_qos_reliability" default="reliable"
+    description="Raw packet reliability: reliable or best_effort"/>
 
   <arg name="proc_mask" default="IMG|PCL|IMU|SCAN" description="
     use any combination of the 4 flags to enable or disable specific processors"/>
@@ -105,6 +109,8 @@
         <param name="timestamp_mode" value="$(var timestamp_mode)"/>
         <param name="ptp_utc_tai_offset" value="$(var ptp_utc_tai_offset)"/>
         <param name="use_system_default_qos" value="$(var use_system_default_qos)"/>
+        <param name="raw_packet_qos_depth" value="$(var raw_packet_qos_depth)"/>
+        <param name="raw_packet_qos_reliability" value="$(var raw_packet_qos_reliability)"/>
         <param name="proc_mask" value="$(var proc_mask)"/>
         <param name="scan_ring" value="$(var scan_ring)"/>
         <param name="point_type" value="$(var point_type)"/>
@@ -118,6 +124,8 @@
       </composable_node>
       <composable_node pkg="ouster_ros" plugin="ouster_ros::OusterImage" name="os_image">
         <param name="use_system_default_qos" value="$(var use_system_default_qos)"/>
+        <param name="raw_packet_qos_depth" value="$(var raw_packet_qos_depth)"/>
+        <param name="raw_packet_qos_reliability" value="$(var raw_packet_qos_reliability)"/>
         <param name="proc_mask" value="$(var proc_mask)"/>
         <param name="mask_path" value="$(var mask_path)"/>
       </composable_node>
@@ -129,18 +137,16 @@
     <arg name="rviz_config" value="$(var rviz_config)"/>
   </include>
 
-  <let name="_use_bag_file_name" value="$(eval '\'$(var bag_file)\' != \'b\'')"/>
-
-  <executable if="$(var _use_bag_file_name)" output="screen"
-    launch-prefix="bash -c 'sleep $(var play_delay); $0 $@'"
-    cmd="ros2 bag play $(var bag_file) --clock $(var _loop)
-      --rate $(var play_rate)
-      --remap
-        /os_node/metadata:=/ouster/metadata
-        /os_node/imu_packets:=/ouster/imu_packets
-        /os_node/lidar_packets:=/ouster/lidar_packets
-      --qos-profile-overrides-path
-      $(find-pkg-share ouster_ros)/config/metadata-qos-override.yaml
-      "/>
+  <!-- The helper preserves bag_file=b (no player) without shell/eval quoting. -->
+  <include file="$(find-pkg-share ouster_ros)/launch/replay_packets.launch.py">
+    <arg name="bag_file" value="$(var bag_file)"/>
+    <arg name="ouster_ns" value="$(var ouster_ns)"/>
+    <arg name="raw_packet_qos_depth" value="$(var raw_packet_qos_depth)"/>
+    <arg name="raw_packet_qos_reliability" value="$(var raw_packet_qos_reliability)"/>
+    <arg name="play_rate" value="$(var play_rate)"/>
+    <arg name="play_delay" value="$(var play_delay)"/>
+    <arg name="loop" value="$(var loop)"/>
+    <arg name="qos_profile_overrides_path" value="$(var qos_profile_overrides_path)"/>
+  </include>
 
 </launch>

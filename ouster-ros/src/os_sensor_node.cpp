@@ -15,6 +15,7 @@
 #include <chrono>
 
 #include "os_sensor_node.h"
+#include "ouster_ros/raw_packet_qos.h"
 #include <ouster/metadata.h>
 #include "ouster_ros/impl/file_util.h"
 
@@ -73,6 +74,7 @@ OusterSensor::~OusterSensor() {
 }
 
 void OusterSensor::declare_parameters() {
+    declare_raw_packet_qos_parameters(*this);
     declare_parameter("sensor_hostname", "");
     declare_parameter("lidar_ip", "");      // community driver param
     declare_parameter("metadata", "");
@@ -1028,12 +1030,7 @@ void OusterSensor::create_services() {
 }
 
 void OusterSensor::create_publishers() {
-    bool use_system_default_qos =
-        get_parameter("use_system_default_qos").as_bool();
-    rclcpp::QoS system_default_qos = rclcpp::SystemDefaultsQoS();
-    rclcpp::QoS sensor_data_qos = rclcpp::SensorDataQoS();
-    auto selected_qos =
-        use_system_default_qos ? system_default_qos : sensor_data_qos;
+    const auto selected_qos = raw_packet_qos(*this);
     lidar_packet_pub =
         create_publisher<PacketMsg>("lidar_packets", selected_qos);
     imu_packet_pub = create_publisher<PacketMsg>("imu_packets", selected_qos);

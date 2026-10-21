@@ -16,6 +16,7 @@
 // clang-format off
 #include "ouster_ros/os_ros.h"
 // clang-format on
+#include "ouster_ros/raw_packet_qos.h"
 
 #include "ouster_ros/visibility_control.h"
 #include "ouster_ros/os_processing_node_base.h"
@@ -40,6 +41,7 @@ class OusterImage : public OusterProcessingNodeBase {
 
    private:
     void on_init() {
+        declare_raw_packet_qos_parameters(*this);
         declare_parameter("timestamp_mode", "");
         declare_parameter("ptp_utc_tai_offset", -37.0);
         declare_parameter("use_system_default_qos", false);
@@ -125,7 +127,7 @@ class OusterImage : public OusterProcessingNodeBase {
             static_cast<int64_t>(ptp_utc_tai_offset * 1e+9),
             min_scan_valid_columns_ratio);
         lidar_packet_sub = create_subscription<PacketMsg>(
-                "lidar_packets", selected_qos,
+                "lidar_packets", raw_packet_qos(*this),
                 [this](const PacketMsg::ConstSharedPtr msg) {
                     if (lidar_packet_handler) {
                         // TODO[UN]: this is not ideal since we can't reuse the msg buffer

@@ -311,6 +311,40 @@ these parameters are defined with the `driver_params.yaml` file found under `con
 folder. The only required parameter is `sensor_hostname` which sets the sensor
 hostname or ip that you want to connect to through ouster-ros driver.
 
+Raw `lidar_packets` and `imu_packets` publishers and subscribers use explicit
+keep-last, volatile QoS. `raw_packet_qos_depth` defaults to `1024` packets (range
+`1..65536`), and `raw_packet_qos_reliability` defaults to `reliable`, with
+`best_effort` available for compatibility or live capture without reliable
+backpressure. These parameters are fixed at node startup. `use_system_default_qos`
+continues to select QoS for processed outputs such as points, IMU, and images.
+
+Bag replay generates a temporary QoS override for the raw topics and latched
+metadata, including legacy `/os_node` names and the selected `ouster_ns`. This
+allows recordings originally made with best-effort publishers to feed reliable
+raw subscriptions. For example:
+
+```bash
+ros2 launch ouster_ros replay.launch.xml bag_file:=/data/capture \
+  ouster_ns:=rig/top raw_packet_qos_depth:=2048 raw_packet_qos_reliability:=reliable
+```
+
+`qos_profile_overrides_path:=/path/to/custom.yaml` replaces that generated file;
+the custom file must include appropriate raw-topic and metadata policies for the
+recorded topic names. For direct playback from an older best-effort driver or
+an unmodified `ros2 bag play`, set the processing nodes' raw reliability to
+`best_effort`, or supply reliable publisher overrides to the bag player. See the
+[ROS bag QoS override guide](https://github.com/ros2/ros2_documentation/blob/rolling/source/Developer-Tools/Debugging/Testing/Overriding-QoS-Policies-For-Recording-And-Playback.rst).
+
+A bounded reliable queue does not guarantee complete recording. At legacy
+128-beam `2048x10`, 1024 lidar packets represent approximately 0.8 seconds and
+24.3 MiB of payload per endpoint, before middleware overhead. A slow reliable
+subscriber can block publication on the live UDP receive thread, allowing the
+socket buffer to overflow. Fast DDS uses synchronous publication by default;
+its asynchronous mode can reduce direct send blocking but still has resource
+limits ([Fast DDS RMW documentation](https://github.com/ros2/rmw_fastrtps#change-publication-mode)).
+Use `best_effort` when this tradeoff is preferable, disable `RAW` in `proc_mask`
+when raw output is unused, and pace replay beyond the configured queue budget.
+
 Other notable parameters include:
 * **point_type**: This parameter allows to customize the point cloud that the
   driver produces through its `/ouster/points` topics. Choose one of the following

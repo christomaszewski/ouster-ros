@@ -242,6 +242,28 @@ if(BUILD_TESTING)
   target_link_libraries(${PROJECT_NAME}_lidar_packet_handler_test
     ouster_ros_library
   )
+  ament_add_gtest(${PROJECT_NAME}_raw_packet_qos_test
+    test/raw_packet_qos_test.cpp
+    TIMEOUT 90
+  )
+  ament_target_dependencies(${PROJECT_NAME}_raw_packet_qos_test
+    ${ouster_ros_library_deps}
+    class_loader
+    rclcpp_components
+    std_msgs
+  )
+  target_compile_definitions(${PROJECT_NAME}_raw_packet_qos_test PRIVATE
+    OUSTER_CLOUD_COMPONENT_LIBRARY="$<TARGET_FILE:os_cloud_component>"
+  )
+  target_link_libraries(${PROJECT_NAME}_raw_packet_qos_test
+    ouster_ros_library
+  )
+  add_dependencies(${PROJECT_NAME}_raw_packet_qos_test os_cloud_component)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME ${PROJECT_NAME}_replay_packet_launch_test
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_replay_packet_launch.py
+  )
   set(CMAKE_MODULE_PATH ${_ouster_test_module_path})
   unset(_ouster_test_module_path)
 endif()
