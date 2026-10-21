@@ -22,6 +22,8 @@ ouster/os_sensor:
     use_system_default_qos: false # processed output topics only
     raw_packet_qos_depth: 1024
     raw_packet_qos_reliability: reliable # keep raw publisher and subscribers compatible
+    # Startup-only live raw FIFO per stream, 1..65536; independent of DDS depth.
+    raw_packet_queue_depth: 1024
     azimuth_window_start: 0
     azimuth_window_end: 360000
     operating_mode: NORMAL

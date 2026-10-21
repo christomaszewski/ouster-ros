@@ -15,6 +15,8 @@ ouster_driver:
     use_system_default_qos: False
     raw_packet_qos_depth: 1024
     raw_packet_qos_reliability: reliable
+    # Startup-only live raw FIFO per stream, 1..65536; independent of DDS depth.
+    raw_packet_queue_depth: 1024
 
     # Set the method used to timestamp measurements.
     # Valid modes are:

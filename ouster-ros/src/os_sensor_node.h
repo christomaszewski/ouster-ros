@@ -27,6 +27,7 @@
 #include "ouster_sensor_msgs/srv/set_config.hpp"
 #include "ouster_ros/visibility_control.h"
 #include "ouster_ros/os_sensor_node_base.h"
+#include "ouster_ros/raw_packet_publisher.h"
 
 
 using rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface;
@@ -67,6 +68,10 @@ class OusterSensor : public OusterSensorNodeBase {
     virtual void cleanup();
 
     bool start();
+
+    // Derived classes must stop virtual receive callbacks before their members
+    // are destroyed. Also joins raw publishing workers after reception stops.
+    void stop_sensor_connection_thread();
 
    private:
     void declare_parameters();
@@ -155,7 +160,7 @@ class OusterSensor : public OusterSensorNodeBase {
 
     void start_sensor_connection_thread();
 
-    void stop_sensor_connection_thread();
+    void stop_raw_packet_publishers();
 
     bool get_active_config_no_throw(const std::string& sensor_hostname,
                                     ouster::sdk::core::SensorConfig& config);
@@ -166,12 +171,13 @@ class OusterSensor : public OusterSensorNodeBase {
     std::string mtp_dest;
     bool mtp_main = false;
     std::shared_ptr<ouster::sdk::sensor::Client> sensor_client;
-    ouster_sensor_msgs::msg::PacketMsg lidar_packet_msg;
-    ouster_sensor_msgs::msg::PacketMsg imu_packet_msg;
     ouster::sdk::core::LidarPacket lidar_packet;
     ouster::sdk::core::ImuPacket imu_packet;
     rclcpp::Publisher<ouster_sensor_msgs::msg::PacketMsg>::SharedPtr lidar_packet_pub;
     rclcpp::Publisher<ouster_sensor_msgs::msg::PacketMsg>::SharedPtr imu_packet_pub;
+    std::shared_ptr<RawPacketPublisher> lidar_raw_publisher;
+    std::shared_ptr<RawPacketPublisher> imu_raw_publisher;
+    rclcpp::TimerBase::SharedPtr raw_packet_diagnostics_timer;
     rclcpp::Service<std_srvs::srv::Empty>::SharedPtr reset_srv;
     rclcpp::Service<ouster_sensor_msgs::srv::GetConfig>::SharedPtr get_config_srv;
     rclcpp::Service<ouster_sensor_msgs::srv::SetConfig>::SharedPtr set_config_srv;

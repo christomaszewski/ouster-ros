@@ -105,6 +105,9 @@ ouster/os_driver:
     # Startup-only values; reliability is reliable or best_effort.
     raw_packet_qos_depth: 1024 # valid range: 1..65536 packets
     raw_packet_qos_reliability: reliable
+    # Live raw publication FIFO per stream; independent of DDS QoS depth.
+    # Startup-only, 1..65536 packets; full queues drop the incoming packet.
+    raw_packet_queue_depth: 1024
     # point_type[optional]: choose from: {original, native, xyz, xyzi, o_xyzi,
     #                                     xyzir, xyzrgb, xyzrgba, color_point}
     # Here is a breif description of each option:

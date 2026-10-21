@@ -75,6 +75,16 @@ OusterSensor::~OusterSensor() {
 
 void OusterSensor::declare_parameters() {
     declare_raw_packet_qos_parameters(*this);
+    rcl_interfaces::msg::ParameterDescriptor raw_queue_descriptor;
+    raw_queue_descriptor.read_only = true;
+    raw_queue_descriptor.description =
+        "Per-stream raw publishing queue (1..65536 packets); drop newest when full";
+    const auto raw_queue_depth = declare_parameter<int64_t>(
+        "raw_packet_queue_depth", 1024, raw_queue_descriptor);
+    if (raw_queue_depth < 1 || raw_queue_depth > 65536) {
+        throw std::invalid_argument(
+            "raw_packet_queue_depth must be between 1 and 65536 packets");
+    }
     declare_parameter("sensor_hostname", "");
     declare_parameter("lidar_ip", "");      // community driver param
     declare_parameter("metadata", "");
@@ -205,6 +215,7 @@ LifecycleNodeInterface::CallbackReturn OusterSensor::on_activate(
 LifecycleNodeInterface::CallbackReturn OusterSensor::on_error(
     const rclcpp_lifecycle::State&) {
     RCLCPP_DEBUG(get_logger(), "on_error() is called.");
+    stop_sensor_connection_thread();
     // Always return failure for now
     return LifecycleNodeInterface::CallbackReturn::FAILURE;
 }
@@ -1030,10 +1041,46 @@ void OusterSensor::create_services() {
 }
 
 void OusterSensor::create_publishers() {
+    stop_raw_packet_publishers();
     const auto selected_qos = raw_packet_qos(*this);
     lidar_packet_pub =
         create_publisher<PacketMsg>("lidar_packets", selected_qos);
     imu_packet_pub = create_publisher<PacketMsg>("imu_packets", selected_qos);
+    const auto depth =
+        static_cast<size_t>(get_parameter("raw_packet_queue_depth").as_int());
+    const auto& pf = ouster::sdk::core::get_format(info);
+    lidar_raw_publisher = std::make_shared<RawPacketPublisher>(
+        depth, pf.lidar_packet_size,
+        [publisher = lidar_packet_pub](const PacketMsg& packet) {
+            publisher->publish(packet);
+        });
+    imu_raw_publisher = std::make_shared<RawPacketPublisher>(
+        depth, pf.imu_packet_size,
+        [publisher = imu_packet_pub](const PacketMsg& packet) {
+            publisher->publish(packet);
+        });
+    // Logging stays off the receive path, including during queue overflow.
+    // Capture owned state rather than this so a running timer is safe to finish
+    // after lifecycle cancellation or destruction.
+    raw_packet_diagnostics_timer = create_wall_timer(
+        1s, std::function<void()>([logger = get_logger(), lidar = lidar_raw_publisher,
+             imu = imu_raw_publisher, last_lidar = uint64_t{0},
+             last_imu = uint64_t{0}]() mutable {
+            auto report = [&](const char* topic, const auto& queue, uint64_t& last) {
+                const auto stats = queue->stats();
+                const auto losses = stats.overflow + stats.publish_errors +
+                                    stats.invalid_size;
+                if (losses == last) return;
+                last = losses;
+                RCLCPP_WARN_STREAM(
+                    logger, "Raw " << topic << ": queue_overflow=" << stats.overflow
+                    << ", publish_errors=" << stats.publish_errors
+                    << ", invalid_size=" << stats.invalid_size
+                    << ". Raw output is incomplete; UDP reception continues.");
+            };
+            report("lidar_packets", lidar, last_lidar);
+            report("imu_packets", imu, last_imu);
+        }));
 }
 
 void OusterSensor::allocate_buffers() {
@@ -1041,10 +1088,8 @@ void OusterSensor::allocate_buffers() {
     auto packet_format = std::make_shared<PacketFormat>(pf);
     lidar_packet.buf.resize(pf.lidar_packet_size);
     lidar_packet.format = packet_format;
-    lidar_packet_msg.buf.resize(pf.lidar_packet_size);
     imu_packet.buf.resize(pf.imu_packet_size);
     imu_packet.format = packet_format;
-    imu_packet_msg.buf.resize(pf.imu_packet_size);
 }
 
 bool OusterSensor::init_id_changed(const PacketFormat& pf,
@@ -1125,6 +1170,7 @@ void OusterSensor::handle_imu_packet(const ImuPacket& imu_packet) {
 }
 
 void OusterSensor::cleanup() {
+    stop_sensor_connection_thread();
     sensor_client.reset();
     lidar_packet_pub.reset();
     imu_packet_pub.reset();
@@ -1168,23 +1214,46 @@ void OusterSensor::start_sensor_connection_thread() {
 
 void OusterSensor::stop_sensor_connection_thread() {
     RCLCPP_DEBUG(get_logger(), "sensor_connection_thread stopping.");
+    sensor_connection_active = false;
     if (sensor_connection_thread != nullptr &&
         sensor_connection_thread->joinable()) {
-        sensor_connection_active = false;
         sensor_connection_thread->join();
     }
+    stop_raw_packet_publishers();
 }
 
-void OusterSensor::on_lidar_packet_msg(const LidarPacket&) {
-    static_cast<std::vector<uint8_t>&>(lidar_packet_msg.buf)
-        .swap(lidar_packet.buf);
-    lidar_packet_pub->publish(lidar_packet_msg);
+void OusterSensor::stop_raw_packet_publishers() {
+    if (raw_packet_diagnostics_timer) {
+        raw_packet_diagnostics_timer->cancel();
+        raw_packet_diagnostics_timer.reset();
+    }
+    // Close both before joining: a blocked lidar publisher must not allow an
+    // IMU backlog from the old activation to keep draining during shutdown.
+    if (lidar_raw_publisher) lidar_raw_publisher->request_stop();
+    if (imu_raw_publisher) imu_raw_publisher->request_stop();
+    auto stop = [this](const char* topic, auto& queue) {
+        if (!queue) return;
+        queue->stop();
+        const auto stats = queue->stats();
+        RCLCPP_INFO_STREAM(
+            get_logger(), "Raw " << topic << " stopped: accepted=" << stats.accepted
+            << ", published=" << stats.published
+            << ", queue_overflow=" << stats.overflow
+            << ", publish_errors=" << stats.publish_errors
+            << ", discarded_on_stop=" << stats.discarded_on_stop
+            << ", invalid_size=" << stats.invalid_size);
+        queue.reset();
+    };
+    stop("lidar_packets", lidar_raw_publisher);
+    stop("imu_packets", imu_raw_publisher);
 }
 
-void OusterSensor::on_imu_packet_msg(const ImuPacket&) {
-    static_cast<std::vector<uint8_t>&>(imu_packet_msg.buf)
-        .swap(imu_packet.buf);
-    imu_packet_pub->publish(imu_packet_msg);
+void OusterSensor::on_lidar_packet_msg(const LidarPacket& packet) {
+    if (lidar_raw_publisher) lidar_raw_publisher->enqueue(packet.buf);
+}
+
+void OusterSensor::on_imu_packet_msg(const ImuPacket& packet) {
+    if (imu_raw_publisher) imu_raw_publisher->enqueue(packet.buf);
 }
 
 }  // namespace ouster_ros

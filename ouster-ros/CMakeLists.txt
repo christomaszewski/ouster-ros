@@ -259,7 +259,34 @@ if(BUILD_TESTING)
     ouster_ros_library
   )
   add_dependencies(${PROJECT_NAME}_raw_packet_qos_test os_cloud_component)
+  ament_add_gtest(${PROJECT_NAME}_raw_packet_publisher_test
+    test/raw_packet_publisher_test.cpp
+    TIMEOUT 90
+  )
+  ament_target_dependencies(${PROJECT_NAME}_raw_packet_publisher_test
+    ouster_sensor_msgs
+  )
+  target_link_libraries(${PROJECT_NAME}_raw_packet_publisher_test
+    OusterSDK::ouster_sensor
+  )
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  # Deterministically block the actual sensor's middleware publication using
+  # executable symbol interposition, available on Linux (the service target).
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    ament_add_gtest(${PROJECT_NAME}_raw_packet_sensor_test
+      test/raw_packet_sensor_test.cpp
+      TIMEOUT 45
+    )
+    ament_target_dependencies(${PROJECT_NAME}_raw_packet_sensor_test
+      ${ouster_ros_library_deps} rclcpp_lifecycle std_srvs
+    )
+    target_link_libraries(${PROJECT_NAME}_raw_packet_sensor_test
+      os_sensor_component ${CMAKE_DL_LIBS}
+    )
+    set_target_properties(${PROJECT_NAME}_raw_packet_sensor_test PROPERTIES
+      ENABLE_EXPORTS ON
+    )
+  endif()
   add_test(NAME ${PROJECT_NAME}_replay_packet_launch_test
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/test/test_replay_packet_launch.py

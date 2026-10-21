@@ -314,9 +314,16 @@ hostname or ip that you want to connect to through ouster-ros driver.
 Raw `lidar_packets` and `imu_packets` publishers and subscribers use explicit
 keep-last, volatile QoS. `raw_packet_qos_depth` defaults to `1024` packets (range
 `1..65536`), and `raw_packet_qos_reliability` defaults to `reliable`, with
-`best_effort` available for compatibility or live capture without reliable
-backpressure. These parameters are fixed at node startup. `use_system_default_qos`
+`best_effort` available for compatibility or to avoid reliable delivery's
+acknowledgement and retry costs. These parameters are fixed at node startup. `use_system_default_qos`
 continues to select QoS for processed outputs such as points, IMU, and images.
+
+Live sensor nodes also have `raw_packet_queue_depth`, a startup-only setting
+defaulting to `1024` packets per stream (range `1..65536`). It controls the
+driver's raw publication FIFOs independently of DDS `raw_packet_qos_depth`.
+The sensor, recording, and multicast XML launches expose this argument; Python
+launches read it from the selected parameter YAML. Bag and PCAP replay do not
+use these live receive queues.
 
 Bag replay generates a temporary QoS override for the raw topics and latched
 metadata, including legacy `/os_node` names and the selected `ouster_ns`. This
@@ -335,15 +342,31 @@ an unmodified `ros2 bag play`, set the processing nodes' raw reliability to
 `best_effort`, or supply reliable publisher overrides to the bag player. See the
 [ROS bag QoS override guide](https://github.com/ros2/ros2_documentation/blob/rolling/source/Developer-Tools/Debugging/Testing/Overriding-QoS-Policies-For-Recording-And-Playback.rst).
 
-A bounded reliable queue does not guarantee complete recording. At legacy
-128-beam `2048x10`, 1024 lidar packets represent approximately 0.8 seconds and
-24.3 MiB of payload per endpoint, before middleware overhead. A slow reliable
-subscriber can block publication on the live UDP receive thread, allowing the
-socket buffer to overflow. Fast DDS uses synchronous publication by default;
-its asynchronous mode can reduce direct send blocking but still has resource
-limits ([Fast DDS RMW documentation](https://github.com/ros2/rmw_fastrtps#change-publication-mode)).
-Use `best_effort` when this tradeoff is preferable, disable `RAW` in `proc_mask`
-when raw output is unused, and pace replay beyond the configured queue budget.
+Live reception copies raw packets into preallocated FIFOs. Separate lidar and
+IMU worker threads publish them, so a slow raw subscriber cannot hold up the UDP
+receive thread or the other raw stream. In the combined driver, scan and IMU
+processing happen before raw enqueueing. A full FIFO drops the incoming packet
+and retains the packets already queued. Overflow and publication errors are
+reported per topic periodically and when the workers stop.
+
+Each stream reserves `raw_packet_queue_depth + 1` payload buffers: the queue
+capacity plus one packet being published. At legacy 128-beam `2048x10`, the
+default 1024-packet lidar FIFO represents approximately 0.8 seconds and reserves
+about 24.3 MiB of payload. DDS history and other driver buffers use additional
+memory. Bounded queues do not guarantee complete recording under sustained
+overload; disable `RAW` in the combined driver's `proc_mask` when unused, and
+keep replay bursts within the DDS queue budget.
+
+Raw packet payload timestamps remain unchanged. A bag's raw-message receipt
+time includes time spent in the publication queue and middleware; it is not an
+exact UDP arrival timestamp when publication falls behind reception.
+
+Stopping reception drops pending raw packets, joins the workers, and reports
+their counts. It cannot cancel a middleware `publish()` already in progress,
+so shutdown can still wait for that call to return. Fast DDS uses
+synchronous publication by default; its asynchronous mode changes where send
+work occurs but still has resource limits
+([Fast DDS RMW documentation](https://github.com/ros2/rmw_fastrtps#change-publication-mode)).
 
 Other notable parameters include:
 * **point_type**: This parameter allows to customize the point cloud that the

@@ -105,6 +105,8 @@
     description="Raw packet keep-last queue depth, from 1 to 65536"/>
   <arg name="raw_packet_qos_reliability" default="reliable"
     description="Raw packet reliability: reliable or best_effort"/>
+  <arg name="raw_packet_queue_depth" default="1024"
+    description="Startup-only live raw publish FIFO capacity per stream, from 1 to 65536; independent of DDS QoS depth"/>
 
   <arg name="proc_mask" default="IMG|PCL|IMU|SCAN|TLM" description="
     use any combination of the 4 flags to enable or disable specific processors"/>
@@ -226,6 +228,7 @@
         <param name="use_system_default_qos" value="$(var use_system_default_qos)"/>
         <param name="raw_packet_qos_depth" value="$(var raw_packet_qos_depth)"/>
         <param name="raw_packet_qos_reliability" value="$(var raw_packet_qos_reliability)"/>
+        <param name="raw_packet_queue_depth" value="$(var raw_packet_queue_depth)"/>
         <param name="azimuth_window_start" value="$(var azimuth_window_start)"/>
         <param name="azimuth_window_end" value="$(var azimuth_window_end)"/>
         <param name="operating_mode" value="$(var operating_mode)"/>

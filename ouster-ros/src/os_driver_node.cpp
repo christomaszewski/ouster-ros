@@ -53,6 +53,7 @@ class OusterDriver : public OusterSensor {
 
     ~OusterDriver() override {
         RCLCPP_DEBUG(get_logger(), "OusterDriver::~OusterDriver() called");
+        stop_sensor_connection_thread();
     }
 
     virtual void on_metadata_updated(const SensorInfo& info) override {
@@ -265,6 +266,7 @@ class OusterDriver : public OusterSensor {
     }
 
     virtual void cleanup() override {
+        stop_sensor_connection_thread();
         imu_packet_handler = nullptr;
         lidar_packet_handler = nullptr;
         imu_pub.reset();
