@@ -208,6 +208,11 @@ endif()
 
 # ==== Test ====
 if(BUILD_TESTING)
+  # The SDK finder resolves GTest in a function scope, hiding variables that
+  # ament_add_gtest needs and silently preventing test target creation.
+  set(_ouster_test_module_path ${CMAKE_MODULE_PATH})
+  list(REMOVE_ITEM CMAKE_MODULE_PATH
+    "${CMAKE_CURRENT_SOURCE_DIR}/ouster-sdk/cmake")
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(${PROJECT_NAME}_test
     src/os_ros.cpp
@@ -227,6 +232,18 @@ if(BUILD_TESTING)
     $<INSTALL_INTERFACE:include>
   )
   target_link_libraries(${PROJECT_NAME}_test ouster_ros_library)
+
+  ament_add_gtest(${PROJECT_NAME}_lidar_packet_handler_test
+    test/lidar_packet_handler_test.cpp
+  )
+  ament_target_dependencies(${PROJECT_NAME}_lidar_packet_handler_test
+    ${ouster_ros_library_deps}
+  )
+  target_link_libraries(${PROJECT_NAME}_lidar_packet_handler_test
+    ouster_ros_library
+  )
+  set(CMAKE_MODULE_PATH ${_ouster_test_module_path})
+  unset(_ouster_test_module_path)
 endif()
 
 
