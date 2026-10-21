@@ -22,16 +22,19 @@ constexpr uint64_t HOST_START_NS = 200000000000ULL;
 constexpr uint64_t FRAME_PERIOD_NS = 100000000ULL;
 constexpr int64_t PTP_OFFSET_NS = -37000000000LL;
 
-uint32_t point_time(const sensor_msgs::msg::PointCloud2& cloud, size_t column) {
+uint32_t point_field(const sensor_msgs::msg::PointCloud2& cloud, size_t index,
+                     const std::string& name) {
     const auto field = std::find_if(
         cloud.fields.begin(), cloud.fields.end(),
-        [](const auto& field) { return field.name == "t"; });
+        [&name](const auto& field) { return field.name == name; });
     EXPECT_NE(field, cloud.fields.end());
     if (field == cloud.fields.end()) return 0;
+    EXPECT_EQ(field->datatype, sensor_msgs::msg::PointField::UINT32);
+    const auto offset = index * cloud.point_step + field->offset;
+    EXPECT_LE(offset + sizeof(uint32_t), cloud.data.size());
+    if (offset + sizeof(uint32_t) > cloud.data.size()) return 0;
     uint32_t result;
-    std::memcpy(&result,
-                cloud.data.data() + column * cloud.point_step + field->offset,
-                sizeof(result));
+    std::memcpy(&result, cloud.data.data() + offset, sizeof(result));
     return result;
 }
 
@@ -44,9 +47,14 @@ class LidarPacketHandlerTimestampTest
         int64_t header_ns;
         uint32_t first_point_ns;
         uint32_t last_point_ns;
+        uint32_t width;
+        uint32_t height;
+        uint32_t first_range;
+        uint32_t last_range;
     };
 
     SensorInfo info = default_sensor_info(LidarMode(512, 10));
+    size_t last_test_column = info.format.columns_per_packet - 1;
     std::mutex mutex;
     std::condition_variable condition;
     bool consumer_entered = false;
@@ -55,27 +63,34 @@ class LidarPacketHandlerTimestampTest
     int64_t current_frame_id = -1;
     uint64_t current_sensor_ns = 0;
 
-    // One valid packet per frame deliberately leaves each scan incomplete.
-    // The next frame's packet releases it, exercising the real ScanBatcher
-    // boundary path and giving ROS-time mode an unambiguous next-frame origin.
-    LidarPacket packet(uint32_t frame_id) {
+    // By default, one valid packet per frame leaves each scan incomplete.
+    // The next frame releases it, giving ROS-time mode an unambiguous origin.
+    // Complete-frame tests supply each packet's starting measurement ID.
+    LidarPacket packet(uint32_t frame_id, uint32_t first_column = 0) {
         const auto& format = get_format(info);
         ouster::sdk::core::impl::PacketWriter writer(format);
         LidarPacket result(format.lidar_packet_size);
         result.format = std::make_shared<PacketFormat>(format);
-        result.host_timestamp = HOST_START_NS + frame_id * FRAME_PERIOD_NS;
+        result.host_timestamp = HOST_START_NS + frame_id * FRAME_PERIOD_NS +
+                                first_column * FRAME_PERIOD_NS /
+                                    info.format.columns_per_frame;
         writer.set_frame_id(result.buf.data(), frame_id);
         for (int column = 0; column < format.columns_per_packet; ++column) {
             auto* data = writer.nth_col(column, result.buf.data());
-            writer.set_col_measurement_id(data, column);
+            const auto measurement_id = first_column + column;
+            writer.set_col_measurement_id(data, measurement_id);
             writer.set_col_status(data, 1);
             writer.set_col_timestamp(
                 data, SENSOR_START_NS + frame_id * FRAME_PERIOD_NS +
-                          column * FRAME_PERIOD_NS / info.format.columns_per_frame);
+                          measurement_id * FRAME_PERIOD_NS /
+                              info.format.columns_per_frame);
         }
+        // PacketWriter indexes this source by absolute measurement ID, so it
+        // needs a full-width array even though only one packet is emitted.
         std::vector<uint32_t> ranges(
-            format.pixels_per_column * format.columns_per_packet, 1000);
-        writer.set_block(ranges.data(), format.columns_per_packet,
+            format.pixels_per_column * info.format.columns_per_frame,
+            1000 + frame_id);
+        writer.set_block(ranges.data(), info.format.columns_per_frame,
                          ChanField::RANGE, result.buf.data());
         return result;
     }
@@ -108,12 +123,17 @@ class LidarPacketHandlerTimestampTest
             [this](PointCloudProcessor_OutputType messages) {
                 ASSERT_EQ(messages.size(), 1u);
                 const auto& cloud = *messages.front();
+                const auto last_point =
+                    (info.format.pixels_per_column - 1) * cloud.width +
+                    last_test_column;
                 std::lock_guard<std::mutex> lock(mutex);
                 outputs.push_back(
                     {current_frame_id, current_sensor_ns,
                      rclcpp::Time(cloud.header.stamp).nanoseconds(),
-                     point_time(cloud, 0),
-                     point_time(cloud, info.format.columns_per_packet - 1)});
+                     point_field(cloud, 0, "t"),
+                     point_field(cloud, last_point, "t"), cloud.width,
+                     cloud.height, point_field(cloud, 0, "range"),
+                     point_field(cloud, last_point, "range")});
                 condition.notify_all();
             });
         return LidarPacketHandler::create(
@@ -154,8 +174,12 @@ class LidarPacketHandlerTimestampTest
             EXPECT_EQ(outputs[i].header_ns, static_cast<int64_t>(header_ns));
             EXPECT_EQ(outputs[i].first_point_ns, 0u);
             EXPECT_EQ(outputs[i].last_point_ns,
-                      (info.format.columns_per_packet - 1) * FRAME_PERIOD_NS /
+                      last_test_column * FRAME_PERIOD_NS /
                           info.format.columns_per_frame);
+            EXPECT_EQ(outputs[i].width, info.format.columns_per_frame);
+            EXPECT_EQ(outputs[i].height, info.format.pixels_per_column);
+            EXPECT_EQ(outputs[i].first_range, 1000u + frame_ids[i]);
+            EXPECT_EQ(outputs[i].last_range, 1000u + frame_ids[i]);
         }
     }
 };
@@ -196,6 +220,52 @@ INSTANTIATE_TEST_SUITE_P(
     ClockModes, LidarPacketHandlerTimestampTest,
     ::testing::Values("TIME_FROM_SYNC_PULSE_IN", "TIME_FROM_PTP_1588",
                       "TIME_FROM_ROS_TIME"),
+    [](const auto& info) { return info.param; });
+
+class CompleteLidarPacketHandlerTimestampTest
+    : public LidarPacketHandlerTimestampTest {
+   protected:
+    void SetUp() override {
+        // Synthetic geometry matches the larger legacy packet dimensions,
+        // without embedding any hardware identity or calibration data.
+        info = default_sensor_info(LidarMode(2048, 10));
+        info.format.pixels_per_column = 128;
+        info.format.pixel_shift_by_row.assign(128, 0);
+        info.beam_altitude_angles.assign(128, 0.0);
+        info.beam_azimuth_angles.assign(128, 0.0);
+        last_test_column = info.format.columns_per_frame - 1;
+        ASSERT_EQ(info.format.columns_per_packet, 16);
+        ASSERT_EQ(get_format(info).lidar_packet_size, 24896u);
+    }
+
+    void consume_frame(const LidarPacketHandler::HandlerType& consume,
+                       uint32_t frame_id) {
+        for (uint32_t column = 0; column < info.format.columns_per_frame;
+             column += info.format.columns_per_packet) {
+            consume(packet(frame_id, column));
+        }
+    }
+};
+
+TEST_P(CompleteLidarPacketHandlerTimestampTest,
+       Complete128BeamScansRetainTheirTimestampsAndRangesWhileQueued) {
+    auto consume = handler();
+    // Complete scans are released by their final packet, without a packet
+    // from the following frame. Keep three such scans queued concurrently.
+    consume_frame(consume, 0);
+    ASSERT_TRUE(wait_for_consumer());
+    consume_frame(consume, 1);
+    consume_frame(consume, 2);
+    release_consumer();
+    ASSERT_TRUE(wait_for_outputs(3));
+    expect_outputs({0, 1, 2});
+}
+
+// Complete-frame ROS_TIME origin estimation is a separate upstream issue;
+// these cases verify ownership of sensor time and PTP-adjusted time only.
+INSTANTIATE_TEST_SUITE_P(
+    ClockModes, CompleteLidarPacketHandlerTimestampTest,
+    ::testing::Values("TIME_FROM_INTERNAL_OSC", "TIME_FROM_PTP_1588"),
     [](const auto& info) { return info.param; });
 
 }  // namespace
