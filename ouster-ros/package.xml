@@ -22,6 +22,7 @@
   <depend>tf2_ros</depend>
   <depend>pcl_conversions</depend>
   <depend>curl</depend>
+  <depend>libtiff-dev</depend>
   <depend>spdlog</depend>
 
   <build_depend>libjsoncpp-dev</build_depend>

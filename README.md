@@ -387,12 +387,14 @@ Other notable parameters include:
   same position in every scan: the masked points leave the point cloud and the
   range, signal, reflectivity and near-IR images are zero there. Only pixels
   whose 8-bit grayscale value is exactly 0 mask; any other value keeps the
-  measurement, and alpha is ignored. PNG, JPEG, BMP, GIF, TGA, PSD and binary
-  PGM/PPM files are accepted, told apart by content rather than by file name.
+  measurement, and alpha is ignored. PNG, JPEG, BMP, GIF, TGA, PSD, TIFF and
+  binary PGM/PPM files are accepted, told apart by content rather than by file
+  name.
   An image that is not the size of a scan (rows = beams, columns = azimuth
   steps) is resized with nearest-neighbour sampling and a warning is logged.
   Prefer a lossless format: JPEG leaves faint non-black noise next to an edge,
-  and those pixels do not mask. The image is decoded with the bundled
+  and those pixels do not mask. TIFF files are read through libtiff (which
+  applies a file's alpha to its colours) and the rest with the bundled
   [stb_image](./ouster-ros/thirdparty/stb/README.md), so the driver does not
   depend on OpenCV.
 

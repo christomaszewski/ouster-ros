@@ -1,8 +1,8 @@
 # stb_image
 
 `stb_image.h` is the single-header image decoder from <https://github.com/nothings/stb>,
-copied unmodified. It reads the optional mask image (`mask_path`); see
-`src/impl/mask_image.cpp`, the only file that includes it.
+copied unmodified. It reads the optional mask image (`mask_path`) in every format except
+TIFF, which goes through libtiff; see `src/impl/mask_image.cpp`, the only file that includes it.
 
 | | |
 |---|---|

@@ -166,7 +166,7 @@ void warn_mask_resized(int image_cols, int image_rows,
 
 /**
  * Reads the mask image at mask_path and fits it to the scan size. PNG, JPEG,
- * BMP, GIF, TGA, PSD and binary PGM/PPM files are accepted. A pixel masks the
+ * BMP, GIF, TGA, PSD, TIFF and binary PGM/PPM files are accepted. A pixel masks the
  * measurement at its position when it is black (8-bit grayscale value 0); any
  * other value keeps it. An image of a different size is resized with nearest
  * neighbour sampling and a warning is logged.

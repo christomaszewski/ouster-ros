@@ -23,6 +23,7 @@ find_package(PCL REQUIRED COMPONENTS common)
 find_package(pcl_conversions REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(TIFF REQUIRED)
 
 # ==== Options ====
 if(MSVC)
@@ -103,6 +104,7 @@ target_link_libraries(ouster_ros_library
     pcl_common
   # PRIVATE (unsupported)
   ${OUSTER_TARGET_LINKS}
+  TIFF::TIFF
 )
 
 # helper method to construct ouster-ros components
