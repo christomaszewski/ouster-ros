@@ -26,9 +26,8 @@ struct MaskImage {
 };
 
 /**
- * Reads a mask image. PNG, JPEG, BMP, GIF, TGA, PSD, TIFF and binary PGM/PPM
- * files are accepted; the format is taken from the file's content, not its
- * name.
+ * Reads a mask image. PNG, JPEG, BMP, GIF, TGA, TIFF and binary PGM/PPM files
+ * are accepted; the format is taken from the file's content, not its name.
  *
  * A pixel is black when its 8-bit grayscale value is 0. Colour pixels are
  * converted with the usual 0.299 R + 0.587 G + 0.114 B weights, rounded; a

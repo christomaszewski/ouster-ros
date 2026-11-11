@@ -387,9 +387,8 @@ Other notable parameters include:
   same position in every scan: the masked points leave the point cloud and the
   range, signal, reflectivity and near-IR images are zero there. Only pixels
   whose 8-bit grayscale value is exactly 0 mask; any other value keeps the
-  measurement, and alpha is ignored. PNG, JPEG, BMP, GIF, TGA, PSD, TIFF and
-  binary PGM/PPM files are accepted, told apart by content rather than by file
-  name.
+  measurement, and alpha is ignored. PNG, JPEG, BMP, GIF, TGA, TIFF and binary
+  PGM/PPM files are accepted, told apart by content rather than by file name.
   An image that is not the size of a scan (rows = beams, columns = azimuth
   steps) is resized with nearest-neighbour sampling and a warning is logged.
   Prefer a lossless format: JPEG leaves faint non-black noise next to an edge,

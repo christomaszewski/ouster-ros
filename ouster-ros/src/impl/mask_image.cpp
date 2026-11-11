@@ -18,16 +18,21 @@
 // which is compiled into this file alone. STB_IMAGE_STATIC keeps every one of
 // its symbols local, so a library loaded into the same process with its own
 // copy of stb_image cannot collide with this one. The float formats are left
-// out: a mask has no use for them.
+// out: a mask has no use for them. So is PSD: the decoder reads it only in RGB
+// mode, so a grayscale PSD (what a mask is usually drawn as) would fail, and it
+// rewrites the colour of every semi-transparent pixel.
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_STATIC
 #define STBI_FAILURE_USERMSG
 #define STBI_NO_HDR
 #define STBI_NO_LINEAR
 #define STBI_NO_PIC
+#define STBI_NO_PSD
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wsign-compare"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
@@ -75,8 +80,7 @@ Container sniff(const std::string& path) {
 [[noreturn]] void fail(const std::string& path, const std::string& reason) {
     throw std::runtime_error(
         "Failed to load mask image from path: " + path + " (" + reason +
-        "). Supported formats: PNG, JPEG, BMP, GIF, TGA, PSD, TIFF, binary "
-        "PGM/PPM.");
+        "). Supported formats: PNG, JPEG, BMP, GIF, TGA, TIFF, binary PGM/PPM.");
 }
 
 [[noreturn]] void fail(const std::string& path) {

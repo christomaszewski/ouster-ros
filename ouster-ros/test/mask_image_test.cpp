@@ -234,12 +234,16 @@ TEST(MaskImage, ReadsTiff) {
 }
 
 TEST(MaskImage, RejectsWhatItCannotDecode) {
-    // a TIFF cut off inside its directory, a WebP header, text, an empty file
+    // a TIFF cut off inside its directory, a WebP header, a 1x1 RGB PSD, text,
+    // an empty file
     const Bytes cut_tiff(TIFF_GRAY.begin(), TIFF_GRAY.begin() + 40);
     const Bytes webp = {'R', 'I', 'F', 'F', 26, 0, 0, 0, 'W', 'E', 'B', 'P',
                         'V', 'P', '8', 'L', 13, 0, 0, 0, 0x2f, 0, 0, 0};
+    const Bytes psd = {'8', 'B', 'P', 'S', 0, 1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0,
+                       0, 1, 0, 0, 0, 1, 0, 8, 0, 3, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 9, 9, 9};
     for (const Bytes& content :
-         {cut_tiff, webp, text("mask_path: not an image\n"), Bytes{}}) {
+         {cut_tiff, webp, psd, text("mask_path: not an image\n"), Bytes{}}) {
         TempFile file(content);
         try {
             read_mask_image(file.path());
