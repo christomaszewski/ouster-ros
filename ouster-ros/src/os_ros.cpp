@@ -10,6 +10,7 @@
 // header file needs to be the first include due to PCL_NO_PRECOMPILE flag
 // clang-format off
 #include "ouster_ros/os_ros.h"
+#include "impl/mask_image.h"
 // clang-format on
 
 #if __has_include(<tf2/LinearMath/Transform.hpp>)
@@ -184,6 +185,17 @@ void warn_mask_resized(int image_cols, int image_rows,
     RCLCPP_WARN_STREAM(logger, "Mask image has size (" << image_cols << "x" << image_rows << ")"
                        << " but incoming scans has size (" << scan_width << "x" << scan_height << ")."
                        << " Resizing mask to match the scans size.");    
+}
+
+std::vector<uint8_t> load_mask_pixels(const std::string& mask_path,
+                                      size_t height, size_t width) {
+    const MaskImage image = read_mask_image(mask_path);
+    if (image.rows != height || image.cols != width) {
+        warn_mask_resized(static_cast<int>(image.cols),
+                          static_cast<int>(image.rows),
+                          static_cast<int>(height), static_cast<int>(width));
+    }
+    return resize_mask(image, height, width);
 }
 
 }  // namespace impl

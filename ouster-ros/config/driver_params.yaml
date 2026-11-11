@@ -188,7 +188,10 @@ ouster/os_driver:
     # processing the LidarScan [0, 1]. default is 0%
     min_scan_valid_columns_ratio: 0.0
     # mask_path[optional]: path to an image file that will be used to mask parts of the
-    # pointcloud.
+    # pointcloud. Black pixels (8-bit gray value 0) mask the measurement at their
+    # position; any other value keeps it. Accepted: PNG, JPEG, BMP, GIF, TGA, PSD and
+    # binary PGM/PPM. Prefer a lossless format; JPEG noise beside an edge does not
+    # mask. An image that is not scan-sized is resized (nearest neighbour).
     mask_path: ''
     # nmea_in_polarity[optional]: polarity for NMEA UART input; possible values:
     # - ACTIVE_HIGH

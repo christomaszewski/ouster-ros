@@ -23,11 +23,6 @@ find_package(PCL REQUIRED COMPONENTS common)
 find_package(pcl_conversions REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(tf2_ros REQUIRED)
-find_package(OpenCV REQUIRED)
-# Use OpenCV libs variable (OpenCV::OpenCV target may not resolve on all systems)
-if(NOT OpenCV_LIBS)
-  set(OpenCV_LIBS ${OpenCV_LIBRARIES})
-endif()
 
 # ==== Options ====
 if(MSVC)
@@ -71,8 +66,7 @@ set(BUILD_SHARED_LIBS ${_SAVE_BUILD_SHARED_LIBS})
 
 # catkin adds all include dirs to a single variable, don't try to use targets
 include_directories(
-  ${_ouster_ros_INCLUDE_DIRS}
-  ${OpenCV_INCLUDE_DIRS})
+  ${_ouster_ros_INCLUDE_DIRS})
 
 # use only MPL-licensed parts of eigen
 add_compile_definitions(EIGEN_MPL2_ONLY)
@@ -84,6 +78,7 @@ endif()
 
 add_library(ouster_ros_library SHARED
   src/impl/file_util.cpp
+  src/impl/mask_image.cpp
   src/os_ros.cpp
 )
 
@@ -108,7 +103,6 @@ target_link_libraries(ouster_ros_library
     pcl_common
   # PRIVATE (unsupported)
   ${OUSTER_TARGET_LINKS}
-  ${OpenCV_LIBS}
 )
 
 # helper method to construct ouster-ros components
@@ -240,6 +234,18 @@ if(BUILD_TESTING)
     ${ouster_ros_library_deps}
   )
   target_link_libraries(${PROJECT_NAME}_lidar_packet_handler_test
+    ouster_ros_library
+  )
+  # The decoder tests need nothing from ROS; the load_mask tests go through the
+  # library the nodes use.
+  ament_add_gtest(${PROJECT_NAME}_mask_image_test
+    test/mask_image_test.cpp
+    test/load_mask_test.cpp
+  )
+  ament_target_dependencies(${PROJECT_NAME}_mask_image_test
+    ${ouster_ros_library_deps}
+  )
+  target_link_libraries(${PROJECT_NAME}_mask_image_test
     ouster_ros_library
   )
   ament_add_gtest(${PROJECT_NAME}_raw_packet_qos_test
