@@ -250,6 +250,16 @@ if(BUILD_TESTING)
   target_link_libraries(${PROJECT_NAME}_mask_image_test
     ouster_ros_library
   )
+  ament_add_gtest(${PROJECT_NAME}_image_processor_test
+    test/image_processor_test.cpp
+    TIMEOUT 90
+  )
+  ament_target_dependencies(${PROJECT_NAME}_image_processor_test
+    ${ouster_ros_library_deps}
+  )
+  target_link_libraries(${PROJECT_NAME}_image_processor_test
+    ouster_ros_library
+  )
   ament_add_gtest(${PROJECT_NAME}_raw_packet_qos_test
     test/raw_packet_qos_test.cpp
     TIMEOUT 90

@@ -47,6 +47,12 @@ class OusterImage : public OusterProcessingNodeBase {
         declare_parameter("use_system_default_qos", false);
         declare_parameter("min_scan_valid_columns_ratio", 0.0);
         declare_parameter("mask_path", "");
+        rcl_interfaces::msg::ParameterDescriptor image_policy;
+        image_policy.description =
+            "Process images without subscribers. False pauses each unused "
+            "channel's exposure state; discovery/join may briefly delay or "
+            "adjust images. True preserves continuous exposure history.";
+        declare_parameter("image_always_process", false, image_policy);
         create_metadata_subscriber(
             [this](const auto& msg) { metadata_handler(msg); });
         RCLCPP_INFO(get_logger(), "OusterImage: node initialized!");
@@ -119,7 +125,8 @@ class OusterImage : public OusterProcessingNodeBase {
                     for (auto it = msgs.begin(); it != msgs.end(); ++it) {
                         image_pubs[it->first]->publish(*it->second);
                     }
-                })
+                }, ImageProcessor::subscriber_demand(
+                    image_pubs, get_parameter("image_always_process").as_bool()))
         };
 
         lidar_packet_handler = LidarPacketHandler::create(

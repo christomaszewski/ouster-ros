@@ -49,6 +49,12 @@ class OusterDriver : public OusterSensor {
         declare_parameter("v_reduction", 1);
         declare_parameter("min_scan_valid_columns_ratio", 0.0);
         declare_parameter("mask_path", "");
+        rcl_interfaces::msg::ParameterDescriptor image_policy;
+        image_policy.description =
+            "Process images without subscribers. False pauses each unused "
+            "channel's exposure state; discovery/join may briefly delay or "
+            "adjust images. True preserves continuous exposure history.";
+        declare_parameter("image_always_process", false, image_policy);
     }
 
     ~OusterDriver() override {
@@ -216,7 +222,8 @@ class OusterDriver : public OusterSensor {
                     for (auto it = msgs.begin(); it != msgs.end(); ++it) {
                         image_pubs[it->first]->publish(*it->second);
                     }
-                }));
+                }, ImageProcessor::subscriber_demand(
+                    image_pubs, get_parameter("image_always_process").as_bool())));
         }
 
         if (impl::check_token(tokens, "PCL") || impl::check_token(tokens, "SCAN") ||
