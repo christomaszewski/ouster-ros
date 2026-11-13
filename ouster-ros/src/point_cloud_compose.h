@@ -140,15 +140,17 @@ void scan_to_cloud_f(ouster_ros::Cloud<PointT>& cloud, PointS& staging_point,
         // pixel_shift_by_row values are within the range [-w, w), which is
         // validated by PointCloudProcessor at construction.
         const auto row_shift = destagger ? (pixel_shift_by_row[u] + w) % w : 0;
+        const auto src_row_idx = u * w;
+        const auto tgt_row_idx = organized ? (u / rows_step) * w : 0;
         for (auto v = 0; v < w; ++v) {   // TODO[UN]: consider cols_step in future
             // equivalent to (v + w - row_shift) % w, but avoids a division
             // per pixel since v and row_shift are both in [0, w)
             auto v_shift = v - row_shift;
             if (v_shift < 0) v_shift += w;
-            const auto src_idx = u * w + v_shift;
+            const auto src_idx = src_row_idx + v_shift;
             const auto xyz = points.row(src_idx);
             const auto tgt_idx =
-                organized ? (u / rows_step) * w + v : cloud.size();
+                organized ? tgt_row_idx + v : cloud.size();
 
             // copy the timestamp of associated point
             auto ts =
