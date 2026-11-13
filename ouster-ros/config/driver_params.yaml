@@ -95,6 +95,10 @@ ouster/os_driver:
     # proc_mask[optional]: use any combination of the 6 flags IMG, PCL, IMU, SCAN
     # RAW and TLM to enable or disable their respective messages.
     proc_mask: IMU|PCL|SCAN|IMG|RAW|TLM
+    # Read when publishers are configured. False processes subscribed image
+    # channels only and pauses unused AE/BUC histories; discovery/rejoin may
+    # briefly delay or adjust images. True keeps continuous image history.
+    image_always_process: false
     # scan_ring[optional]: use this parameter in conjunction with the SCAN flag
     # to select which beam of the LidarScan to use when producing the LaserScan
     # message. Choose a value the range [0, sensor_beams_count).

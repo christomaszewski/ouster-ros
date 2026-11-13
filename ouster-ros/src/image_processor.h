@@ -55,6 +55,15 @@ class ImageProcessor {
           info_(info) {
         uint32_t H = info.format.pixels_per_column;
         uint32_t W = info.format.columns_per_frame;
+        if (W == 0 || info.format.pixel_shift_by_row.size() != H)
+            throw std::invalid_argument("Invalid image dimensions or pixel shift count");
+        row_shifts.reserve(H);
+        for (const auto shift : info.format.pixel_shift_by_row) {
+            const int64_t width = W;
+            if (shift < -width || shift >= width)
+                throw std::invalid_argument("Image pixel shift is outside [-width, width)");
+            row_shifts.push_back(static_cast<size_t>((shift + width) % width));
+        }
 
         image_msgs[ChanField::RANGE] = std::make_shared<sensor_msgs::msg::Image>();
         image_msgs[ChanField::SIGNAL] = std::make_shared<sensor_msgs::msg::Image>();
@@ -140,6 +149,21 @@ class ImageProcessor {
         if (mask.size() != 0) output = output * mask;
     }
 
+    template <typename T>
+    void read_field(const ouster::sdk::core::LidarScan& scan,
+                    const std::string& channel,
+                    ouster::sdk::core::img_t<T>& buffer) {
+        if (scan.has_field(channel)) {
+            // Assign into the existing allocation, retaining the old integer
+            // cast before conversion to float (notably reflectivity/near-IR).
+            ouster::sdk::core::impl::visit_field(
+                scan, channel, impl::read_and_cast(), buffer);
+        } else {
+            buffer.resize(info_.format.pixels_per_column, info_.format.columns_per_frame);
+            buffer.setZero();
+        }
+    }
+
     void process_return(const ouster::sdk::core::LidarScan& lidar_scan,
                         int return_index, const OutputType& requested) {
         const bool first = return_index == 0;
@@ -163,55 +187,58 @@ class ImageProcessor {
 
         const uint32_t H = info_.format.pixels_per_column;
         const uint32_t W = info_.format.columns_per_frame;
-        ouster::sdk::core::img_t<uint32_t> range, signal;
-        ouster::sdk::core::img_t<uint16_t> reflectivity, near_ir;
-        ouster::sdk::core::img_t<float> signal_image, reflectivity_image, nearir_image;
-        ouster::sdk::core::img_t<uint8_t> red, green, blue;
+        const uint32_t* range = nullptr;
         pixel_type* range_pixels = nullptr;
         uint8_t* rgb_pixels = nullptr;
         if (range_output) {
-            range = lidar_scan.field<uint32_t>(range_channel);
+            // The scan owns this immutable field for the entire synchronous
+            // processor call; no staging copy is needed for range.
+            range = lidar_scan.field<uint32_t>(range_channel).data();
             range_pixels = reinterpret_cast<pixel_type*>(
                 image_msgs.at(range_channel)->data.data());
         }
         if (signal_needed) {
-            signal = impl::get_or_fill_zero<uint32_t>(signal_channel, lidar_scan);
+            read_field(lidar_scan, signal_channel, signal);
             signal_image.resize(H, W);
         }
         if (reflectivity_needed) {
-            reflectivity = impl::get_or_fill_zero<uint16_t>(reflectivity_channel, lidar_scan);
+            read_field(lidar_scan, reflectivity_channel, reflectivity);
             reflectivity_image.resize(H, W);
         }
         if (nearir_output) {
-            near_ir = impl::get_or_fill_zero<uint16_t>(ChanField::NEAR_IR, lidar_scan);
+            read_field(lidar_scan, ChanField::NEAR_IR, near_ir);
             nearir_image.resize(H, W);
         }
         if (rgb_output) {
-            red = impl::get_or_fill_zero<uint8_t>(ChanField::R_U8, lidar_scan);
-            green = impl::get_or_fill_zero<uint8_t>(ChanField::G_U8, lidar_scan);
-            blue = impl::get_or_fill_zero<uint8_t>(ChanField::B_U8, lidar_scan);
+            read_field(lidar_scan, ChanField::R_U8, red);
+            read_field(lidar_scan, ChanField::G_U8, green);
+            read_field(lidar_scan, ChanField::B_U8, blue);
             rgb_pixels = image_msgs.at(ChanField::RGB)->data.data();
         }
 
-        for (size_t u = 0; u < H; ++u) {
-            for (size_t v = 0; v < W; ++v) {
-                const size_t vv = (v + W - info_.format.pixel_shift_by_row[u]) % W;
-                const size_t source = u * W + vv;
-                const size_t target = u * W + v;
-                if (range_output) {
-                    const auto r = (range.data()[source] + 0b10) >> 2;
-                    range_pixels[target] = r > pixel_value_max ? 0 : r;
-                }
-                if (signal_needed) signal_image.data()[target] = signal.data()[source];
-                if (reflectivity_needed)
-                    reflectivity_image.data()[target] = reflectivity.data()[source];
-                if (nearir_output) nearir_image.data()[target] = near_ir.data()[source];
-                if (rgb_output) {
-                    rgb_pixels[3 * target] = red.data()[source];
-                    rgb_pixels[3 * target + 1] = green.data()[source];
-                    rgb_pixels[3 * target + 2] = blue.data()[source];
-                }
+        const auto process_pixel = [&](size_t target, size_t source) {
+            if (range_output) {
+                const auto r = (range[source] + 0b10) >> 2;
+                range_pixels[target] = r > pixel_value_max ? 0 : r;
             }
+            if (signal_needed) signal_image.data()[target] = signal.data()[source];
+            if (reflectivity_needed)
+                reflectivity_image.data()[target] = reflectivity.data()[source];
+            if (nearir_output) nearir_image.data()[target] = near_ir.data()[source];
+            if (rgb_output) {
+                rgb_pixels[3 * target] = red.data()[source];
+                rgb_pixels[3 * target + 1] = green.data()[source];
+                rgb_pixels[3 * target + 2] = blue.data()[source];
+            }
+        };
+        for (size_t u = 0; u < H; ++u) {
+            const size_t row = u * W;
+            const size_t split = row_shifts[u];
+            // A destaggered row is two contiguous source spans. Keep the old
+            // destination order without a modulo or wrap branch per pixel.
+            const size_t tail = row + W - split;
+            for (size_t v = 0; v < split; ++v) process_pixel(row + v, tail + v);
+            for (size_t v = split; v < W; ++v) process_pixel(row + v, row + v - split);
         }
 
         if (signal_needed) {
@@ -272,6 +299,14 @@ class ImageProcessor {
 
     ouster::sdk::core::image::AutoExposure nearir_ae, signal_ae, reflec_ae;
     ouster::sdk::core::image::BeamUniformityCorrector nearir_buc;
+
+    // Only demanded channel families resize these buffers. Retain allocations
+    // between frames/returns; the native processing thread is their sole owner.
+    std::vector<size_t> row_shifts;
+    ouster::sdk::core::img_t<uint32_t> signal;
+    ouster::sdk::core::img_t<uint16_t> reflectivity, near_ir;
+    ouster::sdk::core::img_t<float> signal_image, reflectivity_image, nearir_image;
+    ouster::sdk::core::img_t<uint8_t> red, green, blue;
 
     ouster::sdk::core::img_t<pixel_type> mask;
     bool has_rgb_ = false;

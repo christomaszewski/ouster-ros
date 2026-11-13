@@ -38,14 +38,14 @@ void expect_image(const Image& actual, const Image& expected) {
     EXPECT_EQ(actual.data, expected.data);
 }
 
-SensorInfo image_info(UDPProfileLidar profile, int width = 64) {
+SensorInfo image_info(UDPProfileLidar profile, int width = 64, int height = 32) {
     auto info = default_sensor_info(LidarMode::_1024x10);
     info.format.udp_profile_lidar = profile;
     info.format.columns_per_frame = width;
-    info.format.pixels_per_column = 32;
+    info.format.pixels_per_column = height;
     const std::array<int, 6> shifts{{-width, -1, 0, width - 1, width / 2, -width + 1}};
-    info.format.pixel_shift_by_row.resize(32);
-    for (size_t u = 0; u < 32; ++u)
+    info.format.pixel_shift_by_row.resize(height);
+    for (size_t u = 0; u < static_cast<size_t>(height); ++u)
         info.format.pixel_shift_by_row[u] = shifts[u % shifts.size()];
     return info;
 }
@@ -156,6 +156,21 @@ TEST_P(ImageEquivalenceTest, AllDemandedImagesMatchOldBytesOverMultipleFrames) {
 INSTANTIATE_TEST_SUITE_P(ProfilesAndMasks, ImageEquivalenceTest,
                         ::testing::ValuesIn(image_cases()));
 
+TEST(ImageDemandTest, FullResolutionImagesMatchAcrossExposureCycles) {
+    const auto info = image_info(UDPProfileLidar::LEGACY, 2048, 128);
+    Images expected, actual;
+    auto old = LegacyImageProcessor::create(info, "frame", "", collect(expected));
+    auto current = ImageProcessor::create(info, "frame", "", collect(actual));
+    for (int frame = 0; frame < 18; ++frame) {
+        SCOPED_TRACE(frame);
+        auto scan = image_scan(info, frame);
+        old(scan, 0, rclcpp::Time(frame));
+        current(scan, 0, rclcpp::Time(frame));
+        ASSERT_EQ(actual.size(), expected.size());
+        for (const auto& entry : expected) expect_image(actual.at(entry.first), entry.second);
+    }
+}
+
 TEST(ImageDemandTest, ZeroDemandAndUnavailableRgbNeverReadScanFields) {
     const auto info = image_info(UDPProfileLidar::LEGACY);
     int callbacks = 0;
@@ -167,6 +182,20 @@ TEST(ImageDemandTest, ZeroDemandAndUnavailableRgbNeverReadScanFields) {
     EXPECT_NO_THROW(processor(LidarScan{}, 0, rclcpp::Time(0)));
     EXPECT_EQ(callbacks, 0);
     EXPECT_EQ(queries, 4);  // One demand snapshot, only supported channels.
+}
+
+TEST(ImageDemandTest, RejectsInvalidShiftMetadataBeforeProcessing) {
+    auto info = image_info(UDPProfileLidar::LEGACY);
+    auto create = [&]() { return ImageProcessor::create(info, "frame", "", [](auto) {}); };
+    info.format.pixel_shift_by_row[0] = info.format.columns_per_frame;
+    EXPECT_THROW(create(), std::invalid_argument);
+    info.format.pixel_shift_by_row[0] = -static_cast<int>(info.format.columns_per_frame) - 1;
+    EXPECT_THROW(create(), std::invalid_argument);
+    info.format.pixel_shift_by_row.pop_back();
+    EXPECT_THROW(create(), std::invalid_argument);
+    info = image_info(UDPProfileLidar::LEGACY);
+    info.format.columns_per_frame = 0;
+    EXPECT_THROW(create(), std::invalid_argument);
 }
 
 TEST(ImageDemandTest, SecondReturnOnlyUsesFirstReturnExposureHistory) {
@@ -198,6 +227,28 @@ TEST(ImageDemandTest, SignalOnlyDoesNotReadRangeOrOtherChannels) {
     EXPECT_NO_THROW(current(scan, 0, rclcpp::Time(0)));
     ASSERT_EQ(actual.size(), 1U);
     EXPECT_EQ(actual.count(ChanField::SIGNAL), 1U);
+}
+
+TEST(ImageDemandTest, RgbOnlyDoesNotReadGrayscaleFields) {
+    const auto info = image_info(UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_RGB16);
+    LidarScan scan(std::make_shared<SensorInfo>(info),
+        std::vector<FieldType>{{ChanField::R_U8, ChanFieldType::UINT8},
+                               {ChanField::G_U8, ChanFieldType::UINT8},
+                               {ChanField::B_U8, ChanFieldType::UINT8}});
+    scan.field<uint8_t>(ChanField::R_U8).setConstant(3);
+    scan.field<uint8_t>(ChanField::G_U8).setConstant(5);
+    scan.field<uint8_t>(ChanField::B_U8).setConstant(7);
+    Images actual;
+    auto current = ImageProcessor::create(info, "frame", "", collect(actual),
+        [](const std::string& field) { return field == ChanField::RGB; });
+    EXPECT_NO_THROW(current(scan, 0, rclcpp::Time(0)));
+    ASSERT_EQ(actual.size(), 1U);
+    const auto& pixels = actual.at(ChanField::RGB).data;
+    for (size_t i = 0; i < pixels.size(); i += 3) {
+        EXPECT_EQ(pixels[i], 3);
+        EXPECT_EQ(pixels[i + 1], 5);
+        EXPECT_EQ(pixels[i + 2], 7);
+    }
 }
 
 TEST(ImageDemandTest, PausesEachUnusedFamilyAndResumesWithoutReset) {
