@@ -27,10 +27,10 @@ using PointCloudProcessor_OutputType =
 using PointCloudProcessor_PostProcessingFn = std::function<void(PointCloudProcessor_OutputType)>;
 
 
-template <class PointT>
+template <class PointT, class OutputCloud = Cloud<PointT>>
 class PointCloudProcessor {
    public:
-    using ScanToCloudFn = std::function<void(ouster_ros::Cloud<PointT>& cloud,
+    using ScanToCloudFn = std::function<void(OutputCloud& cloud,
                                         const ouster::sdk::core::PointCloudXYZf& points,
                                         uint64_t scan_ts, const ouster::sdk::core::LidarScan& ls,
                                         const std::vector<int>& pixel_shift_by_row,
@@ -47,7 +47,7 @@ class PointCloudProcessor {
         : frame(frame_id),
           pixel_shift_by_row(info.format.pixel_shift_by_row),
           cloud{info.format.columns_per_frame,
-                info.format.pixels_per_column / rows_step},
+                output_height(info, rows_step)},
           min_range_(min_range), max_range_(max_range),
           pc_msgs(info.num_returns()),
           scan_to_cloud_fn(scan_to_cloud_fn_),
@@ -77,6 +77,19 @@ class PointCloudProcessor {
     }
 
    private:
+    static uint32_t output_height(const ouster::sdk::core::SensorInfo& info,
+                                  int rows_step) {
+        const auto height = info.format.pixels_per_column;
+        if (rows_step <= 0 || height == 0 ||
+            info.format.columns_per_frame == 0 || height % rows_step != 0) {
+            throw std::invalid_argument(
+                "point cloud dimensions must be positive and rows_step (" +
+                std::to_string(rows_step) + ") must divide pixels_per_column (" +
+                std::to_string(height) + ")");
+        }
+        return height / rows_step;
+    }
+
     // scan_to_cloud_f relies on every pixel shift being within [-w, w) to
     // avoid a per-pixel modulo, reject metadata that violates this up front
     void validate_pixel_shift_by_row(
@@ -112,6 +125,14 @@ class PointCloudProcessor {
     void process(const ouster::sdk::core::LidarScan& lidar_scan, uint64_t scan_ts,
                  const rclcpp::Time& msg_ts) {
         for (int i = 0; i < static_cast<int>(pc_msgs.size()); ++i) {
+            // A callback may retain a message beyond this scan. Reuse only
+            // messages still exclusively owned by this processor. publish(const
+            // Message&) consumes/copies the input before returning; retained
+            // shared messages take the fresh-buffer path below.
+            if (!pc_msgs[i].unique())
+                pc_msgs[i] = std::make_shared<sensor_msgs::msg::PointCloud2>();
+            if constexpr (std::is_same_v<OutputCloud, PointCloud2Builder<PointT>>)
+                cloud.attach(*pc_msgs[i]);
             auto range_channel = i == 0 ? ChanField::RANGE : ChanField::RANGE2;
             auto range = lidar_scan.field<uint32_t>(range_channel);
             auto range_masked = mask.size() != 0 ? range * mask : range;
@@ -122,7 +143,8 @@ class PointCloudProcessor {
             scan_to_cloud_fn(cloud, points, scan_ts, lidar_scan,
                                         pixel_shift_by_row, i);
 
-            pcl_toROSMsg(cloud, *pc_msgs[i]);
+            if constexpr (std::is_same_v<OutputCloud, Cloud<PointT>>)
+                pcl_toROSMsg(cloud, *pc_msgs[i]);
             pc_msgs[i]->header.stamp = msg_ts;
             pc_msgs[i]->header.frame_id = frame;
         }
@@ -160,7 +182,7 @@ class PointCloudProcessor {
     ouster::sdk::core::ArrayX3fR lut_offset;
     ouster::sdk::core::PointCloudXYZf points;
     std::vector<int> pixel_shift_by_row;
-    ouster_ros::Cloud<PointT> cloud;
+    OutputCloud cloud;
     uint32_t min_range_;
     uint32_t max_range_;
     PointCloudProcessor_OutputType pc_msgs;

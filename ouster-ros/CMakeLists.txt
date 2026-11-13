@@ -217,6 +217,7 @@ if(BUILD_TESTING)
     test/point_accessor_test.cpp
     test/point_transform_test.cpp
     test/point_cloud_compose_test.cpp
+    test/point_cloud2_builder_test.cpp
   )
   ament_target_dependencies(${PROJECT_NAME}_test
     rclcpp

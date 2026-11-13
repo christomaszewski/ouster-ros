@@ -10,6 +10,7 @@
 
 #include "point_meta_helpers.h"
 #include "point_transform.h"
+#include "point_cloud2_builder.h"
 
 namespace ouster_ros {
 
@@ -115,20 +116,38 @@ void copy_lidar_scan_fields_to_point(PointT& pt, const Tuple& tp, int idx) {
 template <class T>
 using Cloud = pcl::PointCloud<T>;
 
-// TODO[UN]: make this a functor
-template <std::size_t N, const ChanFieldTable<N>& PROFILE, typename PointT,
+template <typename PointT>
+class PclCloudWriter {
+   public:
+    using PointType = PointT;
+    explicit PclCloudWriter(Cloud<PointT>& cloud) : cloud_(cloud) {}
+    void prepare(bool organized) { if (!organized) cloud_.clear(); }
+    size_t size() const { return cloud_.size(); }
+    PointT& point(size_t index, bool organized, PointT&) {
+        if (!organized) cloud_.points.emplace_back();
+        return cloud_.points[index];
+    }
+    void store(size_t, const PointT&, bool) {}
+    void finish(bool dense) { cloud_.is_dense = dense; }
+   private:
+    Cloud<PointT>& cloud_;
+};
+
+template <std::size_t N, const ChanFieldTable<N>& PROFILE, typename Writer,
           typename PointS>
-void scan_to_cloud_f(ouster_ros::Cloud<PointT>& cloud, PointS& staging_point,
+void scan_to_cloud_impl(Writer& cloud, PointS& staging_point,
                      const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                      const ouster::sdk::core::LidarScan& ls,
                      const std::vector<int>& pixel_shift_by_row,
                      bool organized = false, bool destagger = true,
                      int rows_step = 1) {
+    using PointT = typename Writer::PointType;
     auto ls_tuple = make_lidar_scan_tuple<0, N, PROFILE>(ls);
     auto timestamp = ls.timestamp();
 
-    if (!organized) cloud.clear();
-    cloud.is_dense = true;
+    cloud.prepare(organized);
+    bool is_dense = true;
+    PointT converted_point;
 
     int h = static_cast<int>(ls.h);
     int w = static_cast<int>(ls.w);
@@ -158,19 +177,19 @@ void scan_to_cloud_f(ouster_ros::Cloud<PointT>& cloud, PointS& staging_point,
 
             if (organized) {
                 // set is_dense to false if any of the xyz coordinates is NaN
-                cloud.is_dense &= !xyz.hasNaN();
+                is_dense &= !xyz.hasNaN();
             } else {
                 if (xyz.hasNaN())
                     continue;
-                else
-                    cloud.points.emplace_back();
             }
 
+
+            auto& target_point = cloud.point(tgt_idx, organized, converted_point);
 
             // if target point and staging point has matching type bind the
             // target directly and avoid performing transform_point at the end
             auto& pt = CondBinaryBind<std::is_same_v<PointT, PointS>>::run(
-                cloud.points[tgt_idx], staging_point);
+                target_point, staging_point);
             // all native point types have x, y, z, t and ring values
             pt.x = static_cast<decltype(pt.x)>(xyz(0));
             pt.y = static_cast<decltype(pt.y)>(xyz(1));
@@ -185,12 +204,41 @@ void scan_to_cloud_f(ouster_ros::Cloud<PointT>& cloud, PointS& staging_point,
             // only perform point transform operation when PointT, and PointS
             // don't match
             CondBinaryOp<!std::is_same_v<PointT, PointS>>::run(
-                cloud.points[tgt_idx], staging_point,
+                target_point, staging_point,
                 [](auto& tgt_pt, const auto& src_pt) {
                     point::transform(tgt_pt, src_pt);
                 });
+            cloud.store(tgt_idx, target_point, organized);
         }
     }
+    cloud.finish(is_dense);
+}
+
+template <std::size_t N, const ChanFieldTable<N>& PROFILE, typename PointT,
+          typename PointS>
+void scan_to_cloud_f(Cloud<PointT>& cloud, PointS& staging_point,
+                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
+                     const ouster::sdk::core::LidarScan& ls,
+                     const std::vector<int>& pixel_shift_by_row,
+                     bool organized = false, bool destagger = true,
+                     int rows_step = 1) {
+    PclCloudWriter<PointT> writer(cloud);
+    scan_to_cloud_impl<N, PROFILE>(writer, staging_point, points, scan_ts, ls,
+                                   pixel_shift_by_row, organized, destagger,
+                                   rows_step);
+}
+
+template <std::size_t N, const ChanFieldTable<N>& PROFILE, typename PointT,
+          typename PointS>
+void scan_to_cloud_f(PointCloud2Builder<PointT>& writer, PointS& staging_point,
+                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
+                     const ouster::sdk::core::LidarScan& ls,
+                     const std::vector<int>& pixel_shift_by_row,
+                     bool organized = false, bool destagger = true,
+                     int rows_step = 1) {
+    scan_to_cloud_impl<N, PROFILE>(writer, staging_point, points, scan_ts, ls,
+                                   pixel_shift_by_row, organized, destagger,
+                                   rows_step);
 }
 
 }  // namespace ouster_ros

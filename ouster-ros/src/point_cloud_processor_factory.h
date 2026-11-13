@@ -7,14 +7,14 @@ namespace ouster_ros {
 using ouster::sdk::core::UDPProfileLidar;
 
 class PointCloudProcessorFactory {
-    template <typename PointT>
-    static typename PointCloudProcessor<PointT>::ScanToCloudFn
+    template <typename PointT, typename OutputCloud = PointCloud2Builder<PointT>>
+    static typename PointCloudProcessor<PointT, OutputCloud>::ScanToCloudFn
     make_scan_to_cloud_fn(const ouster::sdk::core::SensorInfo& info,
                           bool organized, bool destagger, int rows_step) {
         switch (info.format.udp_profile_lidar) {
             case UDPProfileLidar::LEGACY:
                 return [organized, destagger, rows_step](
-                    ouster_ros::Cloud<PointT>& cloud,
+                    OutputCloud& cloud,
                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                     const ouster::sdk::core::LidarScan& ls,
                     const std::vector<int>& pixel_shift_by_row,
@@ -28,7 +28,7 @@ class PointCloudProcessorFactory {
 
             case UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_DUAL:
                 return [organized, destagger, rows_step](
-                    ouster_ros::Cloud<PointT>& cloud,
+                    OutputCloud& cloud,
                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                     const ouster::sdk::core::LidarScan& ls,
                     const std::vector<int>& pixel_shift_by_row,
@@ -52,7 +52,7 @@ class PointCloudProcessorFactory {
 
             case UDPProfileLidar::RNG19_RFL8_SIG16_NIR16:
                 return [organized, destagger, rows_step](
-                    ouster_ros::Cloud<PointT>& cloud,
+                    OutputCloud& cloud,
                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                     const ouster::sdk::core::LidarScan& ls,
                     const std::vector<int>& pixel_shift_by_row,
@@ -68,7 +68,7 @@ class PointCloudProcessorFactory {
 
             case UDPProfileLidar::RNG15_RFL8_NIR8:
                 return [organized, destagger, rows_step](
-                    ouster_ros::Cloud<PointT>& cloud,
+                    OutputCloud& cloud,
                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                     const ouster::sdk::core::LidarScan& ls,
                     const std::vector<int>& pixel_shift_by_row,
@@ -85,7 +85,7 @@ class PointCloudProcessorFactory {
             case UDPProfileLidar::FUSA_RNG15_RFL8_NIR8_DUAL:
             case UDPProfileLidar::RNG15_RFL8_NIR8_DUAL:
                 return [organized, destagger, rows_step](
-                    ouster_ros::Cloud<PointT>& cloud,
+                    OutputCloud& cloud,
                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                     const ouster::sdk::core::LidarScan& ls,
                     const std::vector<int>& pixel_shift_by_row,
@@ -109,7 +109,7 @@ class PointCloudProcessorFactory {
 
             case UDPProfileLidar::RNG15_RFL8_WIN8:
                 return [organized, destagger, rows_step](
-                    ouster_ros::Cloud<PointT>& cloud,
+                    OutputCloud& cloud,
                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                     const ouster::sdk::core::LidarScan& ls,
                     const std::vector<int>& pixel_shift_by_row,
@@ -125,7 +125,7 @@ class PointCloudProcessorFactory {
 
             case UDPProfileLidar::RNG15_RFL8_NIR8_ZONE16:
                 return [organized, destagger, rows_step](
-                    ouster_ros::Cloud<PointT>& cloud,
+                    OutputCloud& cloud,
                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                     const ouster::sdk::core::LidarScan& ls,
                     const std::vector<int>& pixel_shift_by_row,
@@ -141,7 +141,7 @@ class PointCloudProcessorFactory {
 
             case UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_ZONE16:
                 return [organized, destagger, rows_step](
-                    ouster_ros::Cloud<PointT>& cloud,
+                    OutputCloud& cloud,
                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                     const ouster::sdk::core::LidarScan& ls,
                     const std::vector<int>& pixel_shift_by_row,
@@ -157,7 +157,7 @@ class PointCloudProcessorFactory {
 
             case UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_RGB16:
                 return [organized, destagger, rows_step](
-                    ouster_ros::Cloud<PointT>& cloud,
+                    OutputCloud& cloud,
                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                     const ouster::sdk::core::LidarScan& ls,
                     const std::vector<int>& pixel_shift_by_row,
@@ -173,7 +173,7 @@ class PointCloudProcessorFactory {
 
             case UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_RGB16_DUAL:
                 return [organized, destagger, rows_step](
-                    ouster_ros::Cloud<PointT>& cloud,
+                    OutputCloud& cloud,
                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                     const ouster::sdk::core::LidarScan& ls,
                     const std::vector<int>& pixel_shift_by_row,
@@ -210,7 +210,7 @@ class PointCloudProcessorFactory {
         PointCloudProcessor_PostProcessingFn post_processing_fn) {
         auto scan_to_cloud_fn = make_scan_to_cloud_fn<PointT>(
             info, organized, destagger, rows_step);
-        return PointCloudProcessor<PointT>::create(
+        return PointCloudProcessor<PointT, PointCloud2Builder<PointT>>::create(
             info, frame, apply_lidar_to_sensor_transform,
             min_range, max_range, rows_step, mask_path,
             scan_to_cloud_fn, post_processing_fn);
