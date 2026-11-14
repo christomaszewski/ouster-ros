@@ -306,6 +306,19 @@ if(BUILD_TESTING)
     set_target_properties(${PROJECT_NAME}_raw_packet_sensor_test PROPERTIES
       ENABLE_EXPORTS ON
     )
+    ament_add_gtest(${PROJECT_NAME}_telemetry_reconfigure_test
+      test/telemetry_reconfigure_test.cpp
+      TIMEOUT 45
+    )
+    ament_target_dependencies(${PROJECT_NAME}_telemetry_reconfigure_test
+      ${ouster_ros_library_deps} rclcpp_lifecycle rclcpp_components tf2_ros std_srvs
+    )
+    target_link_libraries(${PROJECT_NAME}_telemetry_reconfigure_test
+      os_sensor_component ${CMAKE_DL_LIBS}
+    )
+    set_target_properties(${PROJECT_NAME}_telemetry_reconfigure_test PROPERTIES
+      ENABLE_EXPORTS ON
+    )
   endif()
   add_test(NAME ${PROJECT_NAME}_replay_packet_launch_test
     COMMAND ${Python3_EXECUTABLE}

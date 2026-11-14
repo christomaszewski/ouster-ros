@@ -297,6 +297,8 @@ class OusterDriver : public OusterSensor {
         stop_sensor_connection_thread();
         imu_packet_handler = nullptr;
         lidar_packet_handler = nullptr;
+        telemetry_handler = nullptr;
+        telemetry_pub.reset();
         imu_pub.reset();
         for (auto p : lidar_pubs) p.reset();
         for (auto p : scan_pubs) p.reset();
