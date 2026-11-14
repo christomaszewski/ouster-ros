@@ -1,6 +1,8 @@
 #pragma once
 
 #include <ouster/lidar_scan.h>
+#include <vector>
+#include <algorithm>
 
 namespace ouster {
 
@@ -59,6 +61,47 @@ void cartesianT(ouster::sdk::core::PointCloudXYZ<T>& points,
             pts[idx_y] = r * dir[idx_y] + ofs[idx_y];
             pts[idx_z] = r * dir[idx_z] + ofs[idx_z];
         }
+    }
+}
+
+// Calculate only source pixels consumed by a cropped organized cloud. Keep the
+// full XYZ indexing/allocation so packing still addresses original scan slots.
+// All dimensions/shifts/window bounds are validated when the handler is built.
+template <typename T>
+void cartesianT_crop(ouster::sdk::core::PointCloudXYZ<T>& points,
+                    const Eigen::Ref<const ouster::sdk::core::img_t<uint32_t>>& range,
+                    const ouster::sdk::core::ArrayX3R<T>& direction,
+                    const ouster::sdk::core::ArrayX3R<T>& offset,
+                    uint32_t min_r, uint32_t max_r, T invalid,
+                    const ouster::sdk::core::img_t<uint32_t>& mask,
+                    int start, int width, int rows_step,
+                    const std::vector<int>& shifts, bool destagger) {
+    auto* const pts = points.data();
+    const auto* const rng = range.data();
+    const auto* const dir = direction.data();
+    const auto* const ofs = offset.data();
+    const auto* const mask_data = mask.size() ? mask.data() : nullptr;
+    const int w = range.cols();
+    const auto span = [&](int first, int count) {
+        for (int i = first; i < first + count; ++i) {
+            const uint32_t r = mask_data ? rng[i] * mask_data[i] : rng[i];
+            const auto idx_x = i * 3;
+            if (r <= min_r || r >= max_r) {
+                pts[idx_x] = pts[idx_x + 1] = pts[idx_x + 2] = invalid;
+            } else {
+                // Same expressions and float conversion/FMA policy as cartesianT.
+                pts[idx_x] = r * dir[idx_x] + ofs[idx_x];
+                pts[idx_x + 1] = r * dir[idx_x + 1] + ofs[idx_x + 1];
+                pts[idx_x + 2] = r * dir[idx_x + 2] + ofs[idx_x + 2];
+            }
+        }
+    };
+    for (int row = 0; row < range.rows(); row += rows_step) {
+        const int shift = destagger ? (shifts[row] + w) % w : 0;
+        const int first = (start - shift + w) % w;
+        const int first_count = std::min(width, w - first);
+        span(row * w + first, first_count);
+        span(row * w, width - first_count);
     }
 }
 

@@ -43,15 +43,17 @@ class PointCloudProcessor {
                         uint32_t min_range, uint32_t max_range,
                         int rows_step, const std::string& mask_path,
                         ScanToCloudFn scan_to_cloud_fn_,
-                        PointCloudProcessor_PostProcessingFn post_processing_fn_)
+                        PointCloudProcessor_PostProcessingFn post_processing_fn_,
+                        CloudColumnWindow crop = {}, bool destagger = true)
         : frame(frame_id),
           pixel_shift_by_row(info.format.pixel_shift_by_row),
-          cloud{info.format.columns_per_frame,
+          cloud{output_width(info, crop),
                 output_height(info, rows_step)},
           min_range_(min_range), max_range_(max_range),
           pc_msgs(info.num_returns()),
           scan_to_cloud_fn(scan_to_cloud_fn_),
-          post_processing_fn(post_processing_fn_) {
+          post_processing_fn(post_processing_fn_),
+          crop_(crop), crop_destagger_(destagger), rows_step_(rows_step) {
         validate_pixel_shift_by_row(info);
         for (size_t i = 0; i < pc_msgs.size(); ++i)
             pc_msgs[i] = std::make_shared<sensor_msgs::msg::PointCloud2>();
@@ -77,6 +79,15 @@ class PointCloudProcessor {
     }
 
    private:
+    static uint32_t output_width(const ouster::sdk::core::SensorInfo& info,
+                                 CloudColumnWindow crop) {
+        const int width = info.format.columns_per_frame;
+        if (width <= 0 || crop.width < 0 || crop.width > width ||
+            crop.start < 0 || crop.start >= width)
+            throw std::invalid_argument("invalid organized cloud crop bounds");
+        return crop.width ? crop.width : width;
+    }
+
     static uint32_t output_height(const ouster::sdk::core::SensorInfo& info,
                                   int rows_step) {
         const auto height = info.format.pixels_per_column;
@@ -135,10 +146,17 @@ class PointCloudProcessor {
                 cloud.attach(*pc_msgs[i]);
             auto range_channel = i == 0 ? ChanField::RANGE : ChanField::RANGE2;
             auto range = lidar_scan.field<uint32_t>(range_channel);
-            auto range_masked = mask.size() != 0 ? range * mask : range;
-            ouster::cartesianT(points, range_masked, lut_direction, lut_offset,
-                               min_range_, max_range_,
-                               std::numeric_limits<float>::quiet_NaN());
+            if (crop_.width) {
+                ouster::cartesianT_crop(
+                    points, range, lut_direction, lut_offset, min_range_, max_range_,
+                    std::numeric_limits<float>::quiet_NaN(), mask, crop_.start,
+                    crop_.width, rows_step_, pixel_shift_by_row, crop_destagger_);
+            } else {
+                auto range_masked = mask.size() != 0 ? range * mask : range;
+                ouster::cartesianT(points, range_masked, lut_direction, lut_offset,
+                                   min_range_, max_range_,
+                                   std::numeric_limits<float>::quiet_NaN());
+            }
 
             scan_to_cloud_fn(cloud, points, scan_ts, lidar_scan,
                                         pixel_shift_by_row, i);
@@ -159,11 +177,12 @@ class PointCloudProcessor {
                                      uint32_t min_range, uint32_t max_range,
                                      int rows_step, const std::string& mask_path,
                                      ScanToCloudFn scan_to_cloud_fn_,
-                                     PointCloudProcessor_PostProcessingFn post_processing_fn) {
+                                     PointCloudProcessor_PostProcessingFn post_processing_fn,
+                                     CloudColumnWindow crop = {}, bool destagger = true) {
         auto handler = std::make_shared<PointCloudProcessor>(
             info, frame, apply_lidar_to_sensor_transform,
             min_range, max_range, rows_step, mask_path,
-            scan_to_cloud_fn_, post_processing_fn);
+            scan_to_cloud_fn_, post_processing_fn, crop, destagger);
 
         return [handler](const ouster::sdk::core::LidarScan& lidar_scan, uint64_t scan_ts,
                          const rclcpp::Time& msg_ts) {
@@ -190,6 +209,9 @@ class PointCloudProcessor {
     PointCloudProcessor_PostProcessingFn post_processing_fn;
 
     ouster::sdk::core::img_t<uint32_t> mask;
+    CloudColumnWindow crop_;
+    bool crop_destagger_;
+    int rows_step_;
 };
 
 }  // namespace ouster_ros

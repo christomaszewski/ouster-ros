@@ -180,6 +180,13 @@ ouster/os_driver:
     # organized[optional]: whether to generate an organized point cloud. default
     # is organized.
     organized: true
+
+    # Opt-in crop to the stable circular union of the sensor column window after
+    # selected rows' destagger shifts. Requires organized=true; read on configure.
+    # Fields/stride stay unchanged; width/row_step/data shrink. Edge NaNs remain.
+    # Original column = (logged column_origin + output column) % source_width.
+    # Origin is derived from metadata and is not serialized in PointCloud2.
+    organized_cloud_crop: false
     # destagger[optional]: enable or disable point cloud destaggering, default enabled.
     destagger: true
     # min_range[optional]: minimum lidar range to consider (meters).

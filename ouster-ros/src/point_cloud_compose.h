@@ -11,6 +11,7 @@
 #include "point_meta_helpers.h"
 #include "point_transform.h"
 #include "point_cloud2_builder.h"
+#include "cloud_column_window.h"
 
 namespace ouster_ros {
 
@@ -133,14 +134,14 @@ class PclCloudWriter {
     Cloud<PointT>& cloud_;
 };
 
-template <std::size_t N, const ChanFieldTable<N>& PROFILE, typename Writer,
-          typename PointS>
+template <std::size_t N, const ChanFieldTable<N>& PROFILE, bool Cropped,
+          typename Writer, typename PointS>
 void scan_to_cloud_impl(Writer& cloud, PointS& staging_point,
                      const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
                      const ouster::sdk::core::LidarScan& ls,
                      const std::vector<int>& pixel_shift_by_row,
                      bool organized = false, bool destagger = true,
-                     int rows_step = 1) {
+                     int rows_step = 1, CloudColumnWindow crop = {}) {
     using PointT = typename Writer::PointType;
     auto ls_tuple = make_lidar_scan_tuple<0, N, PROFILE>(ls);
     auto timestamp = ls.timestamp();
@@ -151,6 +152,7 @@ void scan_to_cloud_impl(Writer& cloud, PointS& staging_point,
 
     int h = static_cast<int>(ls.h);
     int w = static_cast<int>(ls.w);
+    const int output_width = Cropped ? crop.width : w;
 
     for (auto u = 0; u < h; u += rows_step) {
         // pixel_shift_by_row values may be negative, normalize once per row
@@ -160,11 +162,16 @@ void scan_to_cloud_impl(Writer& cloud, PointS& staging_point,
         // validated by PointCloudProcessor at construction.
         const auto row_shift = destagger ? (pixel_shift_by_row[u] + w) % w : 0;
         const auto src_row_idx = u * w;
-        const auto tgt_row_idx = organized ? (u / rows_step) * w : 0;
-        for (auto v = 0; v < w; ++v) {   // TODO[UN]: consider cols_step in future
+        const auto tgt_row_idx = organized ? (u / rows_step) * output_width : 0;
+        for (auto v = 0; v < output_width; ++v) {
             // equivalent to (v + w - row_shift) % w, but avoids a division
             // per pixel since v and row_shift are both in [0, w)
-            auto v_shift = v - row_shift;
+            auto original_col = v;
+            if constexpr (Cropped) {
+                original_col += crop.start;
+                if (original_col >= w) original_col -= w;
+            }
+            auto v_shift = original_col - row_shift;
             if (v_shift < 0) v_shift += w;
             const auto src_idx = src_row_idx + v_shift;
             const auto xyz = points.row(src_idx);
@@ -221,11 +228,17 @@ void scan_to_cloud_f(Cloud<PointT>& cloud, PointS& staging_point,
                      const ouster::sdk::core::LidarScan& ls,
                      const std::vector<int>& pixel_shift_by_row,
                      bool organized = false, bool destagger = true,
-                     int rows_step = 1) {
+                     int rows_step = 1, CloudColumnWindow crop = {}) {
     PclCloudWriter<PointT> writer(cloud);
-    scan_to_cloud_impl<N, PROFILE>(writer, staging_point, points, scan_ts, ls,
-                                   pixel_shift_by_row, organized, destagger,
-                                   rows_step);
+    // Keep the default full-frame point loop free of crop-origin checks.
+    if (crop.width)
+        scan_to_cloud_impl<N, PROFILE, true>(writer, staging_point, points, scan_ts, ls,
+                                            pixel_shift_by_row, organized, destagger,
+                                            rows_step, crop);
+    else
+        scan_to_cloud_impl<N, PROFILE, false>(writer, staging_point, points, scan_ts, ls,
+                                             pixel_shift_by_row, organized, destagger,
+                                             rows_step, crop);
 }
 
 template <std::size_t N, const ChanFieldTable<N>& PROFILE, typename PointT,
@@ -235,10 +248,16 @@ void scan_to_cloud_f(PointCloud2Builder<PointT>& writer, PointS& staging_point,
                      const ouster::sdk::core::LidarScan& ls,
                      const std::vector<int>& pixel_shift_by_row,
                      bool organized = false, bool destagger = true,
-                     int rows_step = 1) {
-    scan_to_cloud_impl<N, PROFILE>(writer, staging_point, points, scan_ts, ls,
-                                   pixel_shift_by_row, organized, destagger,
-                                   rows_step);
+                     int rows_step = 1, CloudColumnWindow crop = {}) {
+    // Keep the default full-frame point loop free of crop-origin checks.
+    if (crop.width)
+        scan_to_cloud_impl<N, PROFILE, true>(writer, staging_point, points, scan_ts, ls,
+                                            pixel_shift_by_row, organized, destagger,
+                                            rows_step, crop);
+    else
+        scan_to_cloud_impl<N, PROFILE, false>(writer, staging_point, points, scan_ts, ls,
+                                             pixel_shift_by_row, organized, destagger,
+                                             rows_step, crop);
 }
 
 }  // namespace ouster_ros

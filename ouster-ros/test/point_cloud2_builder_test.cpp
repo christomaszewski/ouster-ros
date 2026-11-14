@@ -314,3 +314,293 @@ TEST(PointCloud2Builder, RejectsInvalidDimensionsAndRowStepsBeforeAllocation) {
     info.format.columns_per_frame = 0;
     EXPECT_THROW(create(1), std::invalid_argument);
 }
+
+namespace {
+// Independent reference: copy selected columns from the unchanged full output.
+// Derive is_dense from the retained XYZ rather than from discarded full columns.
+sensor_msgs::msg::PointCloud2 reference_crop(
+    const sensor_msgs::msg::PointCloud2& full, CloudColumnWindow crop) {
+    auto expected = full;
+    expected.width = crop.width;
+    expected.row_step = expected.width * full.point_step;
+    expected.data.resize(expected.height * expected.row_step);
+    expected.is_dense = true;
+    for (uint32_t row = 0; row < full.height; ++row) {
+        for (int col = 0; col < crop.width; ++col) {
+            const auto original = (crop.start + col) % full.width;
+            const auto* source = full.data.data() + row * full.row_step +
+                                 original * full.point_step;
+            auto* destination = expected.data.data() + row * expected.row_step +
+                                col * full.point_step;
+            std::memcpy(destination, source, full.point_step);
+            for (size_t axis = 0; axis < 3; ++axis) {
+                float value;
+                std::memcpy(&value, source + 4 * axis, sizeof(value));
+                expected.is_dense &= !std::isnan(value);
+            }
+        }
+    }
+    return expected;
+}
+
+template <typename T>
+void clear_column(LidarScan& scan, const std::string& name, int col) {
+    scan.field<T>(name).col(col).setZero();
+}
+
+void crop_scan_window(LidarScan& scan, const SensorInfo& info, int frame) {
+    for (int col = 0; col < WIDTH; ++col) {
+        const auto window = info.format.column_window;
+        const bool inside = window.first <= window.second ?
+            col >= window.first && col <= window.second :
+            col >= window.first || col <= window.second;
+        const bool valid = inside && !(frame == 1 && col % 3 == 0);
+        scan.status()[col] = valid ? 1 : 0;
+        if (valid) continue;
+        scan.timestamp()[col] = 0;
+        for (const auto& field : scan.field_types()) {
+            switch (field.element_type) {
+                case ChanFieldType::UINT8: clear_column<uint8_t>(scan, field.name, col); break;
+                case ChanFieldType::UINT16: clear_column<uint16_t>(scan, field.name, col); break;
+                case ChanFieldType::UINT32: clear_column<uint32_t>(scan, field.name, col); break;
+                case ChanFieldType::UINT64: clear_column<uint64_t>(scan, field.name, col); break;
+                default: FAIL() << "unexpected test field type";
+            }
+        }
+    }
+}
+
+void compare_crop(const std::string& point_type, UDPProfileLidar profile) {
+    auto info = test_info(profile);
+    info.format.pixel_shift_by_row = {-16, -2, -1, 0, 1, 2, -1, 1};
+    LidarScan scan(WIDTH, HEIGHT, profile);
+    if (profile == UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_RGB16 ||
+        profile == UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_RGB16_DUAL) {
+        for (const auto& name : {ChanField::R_U8, ChanField::G_U8, ChanField::B_U8})
+            scan.add_field(name, fd_array<uint8_t>(HEIGHT, WIDTH));
+    }
+    MaskFile mask;
+    for (const auto window : {std::pair<int, int>{0, 15}, {12, 3}, {4, 9}, {7, 7}})
+        for (bool destagger : {false, true})
+            for (int rows_step : {1, 2, 4, 8})
+                for (bool filtered : {false, true}) {
+                    info.format.column_window = window;
+                    const auto crop = cloud_column_window(info, true, destagger, rows_step, true);
+                    SCOPED_TRACE(point_type + " profile=" + to_string(profile) +
+                                 " window=" + std::to_string(window.first) + ":" +
+                                 std::to_string(window.second) + " crop=" +
+                                 std::to_string(crop.start) + ":" + std::to_string(crop.width) +
+                                 " rows=" + std::to_string(rows_step) +
+                                 " destagger=" + std::to_string(destagger) +
+                                 " filtered=" + std::to_string(filtered));
+                    PointCloudProcessor_OutputType full, actual;
+                    const auto make = [&](bool enable, PointCloudProcessor_OutputType& out) {
+                        return PointCloudProcessorFactory::create_point_cloud_processor(
+                            point_type, info, "os_sensor", filtered, true, destagger,
+                            filtered ? 5000 : 0, filtered ? 15000 : UINT32_MAX,
+                            rows_step, filtered ? mask.path : "",
+                            [&out](auto messages) { out = std::move(messages); }, enable);
+                    };
+                    auto full_processor = make(false, full);
+                    auto cropped_processor = make(true, actual);
+                    for (int frame : {0, 1, 3}) {
+                        fill_scan(scan, frame);
+                        crop_scan_window(scan, info, frame);
+                        const rclcpp::Time stamp(SCAN_TS + frame);
+                        full_processor(scan, SCAN_TS, stamp);
+                        cropped_processor(scan, SCAN_TS, stamp);
+                        ASSERT_EQ(full.size(), actual.size());
+                        ASSERT_EQ(actual.size(), info.num_returns());
+                        for (size_t i = 0; i < actual.size(); ++i) {
+                            // Entire bytes match the full builder's initialized
+                            // padding too; all named fields, NaNs and headers are included.
+                            EXPECT_EQ(reference_crop(*full[i], crop), *actual[i]);
+                        }
+                        full.clear();
+                        actual.clear();
+                    }
+                }
+}
+}  // namespace
+
+TEST(OrganizedCloudCrop, MinimalCircularWindowAndSelectedRows) {
+    auto info = test_info(UDPProfileLidar::LEGACY);
+    info.format.pixel_shift_by_row = {-16, -2, -1, 0, 1, 2, -1, 1};
+    // Independently enumerate every possible containing interval to verify
+    // minimal width. No assumptions about window wrap or shift sign.
+    for (int first = 0; first < WIDTH; ++first)
+        for (int last = 0; last < WIDTH; ++last)
+            for (bool destagger : {false, true})
+                for (int rows : {1, 2, 4, 8}) {
+                    info.format.column_window = {first, last};
+                    const auto crop = cloud_column_window(info, true, destagger, rows, true);
+                    std::vector<bool> required(WIDTH, false);
+                    for (int row = 0; row < HEIGHT; row += rows)
+                        for (int source = 0; source < WIDTH; ++source) {
+                            const bool inside = first <= last ? source >= first && source <= last :
+                                                                source >= first || source <= last;
+                            if (!inside) continue;
+                            int output = source + (destagger ? info.format.pixel_shift_by_row[row] : 0);
+                            while (output < 0) output += WIDTH;
+                            while (output >= WIDTH) output -= WIDTH;
+                            required[output] = true;
+                        }
+                    int minimum = WIDTH;
+                    for (int origin = 0; origin < WIDTH; ++origin) {
+                        int needed = 0;
+                        for (int col = 0; col < WIDTH; ++col)
+                            if (required[col]) needed = std::max(needed, (col - origin + WIDTH) % WIDTH + 1);
+                        minimum = std::min(minimum, needed);
+                    }
+                    EXPECT_EQ(crop.width, minimum);
+                    for (int col = 0; col < WIDTH; ++col)
+                        if (required[col]) EXPECT_LT((col - crop.start + WIDTH) % WIDTH, crop.width);
+                    if (crop.width == WIDTH) EXPECT_EQ(crop.start, 0);
+                }
+}
+
+TEST(OrganizedCloudCrop, RealSensorWindowBoundsAndInvalidInputs) {
+    auto info = default_sensor_info(LidarMode::_2048x10);
+    info.format.columns_per_frame = 2048;
+    info.format.pixels_per_column = 128;
+    info.format.pixel_shift_by_row.assign(128, 0);
+    info.format.pixel_shift_by_row[0] = -62;
+    info.format.pixel_shift_by_row[1] = 62;
+    info.format.column_window = {1024, 0};
+    auto crop = cloud_column_window(info, true, true, 1, true);
+    EXPECT_EQ(crop.start, 962); EXPECT_EQ(crop.width, 1149);
+    info.format.column_window = {1536, 0};
+    crop = cloud_column_window(info, true, true, 1, true);
+    EXPECT_EQ(crop.start, 1474); EXPECT_EQ(crop.width, 637);
+    crop = cloud_column_window(info, true, false, 1, true);
+    EXPECT_EQ(crop.start, 1536); EXPECT_EQ(crop.width, 513);
+    EXPECT_THROW(cloud_column_window(info, false, true, 1, true), std::invalid_argument);
+    EXPECT_THROW(cloud_column_window(info, true, true, 0, true), std::invalid_argument);
+    EXPECT_THROW(cloud_column_window(info, true, true, 3, true), std::invalid_argument);
+    info.format.column_window = {-1, 10};
+    EXPECT_THROW(cloud_column_window(info, true, true, 1, true), std::invalid_argument);
+    info.format.column_window = {0, 2048};
+    EXPECT_THROW(cloud_column_window(info, true, true, 1, true), std::invalid_argument);
+    // Disabled policy ignores crop metadata and retains prior behavior.
+    EXPECT_EQ(cloud_column_window(info, false, true, 1, false).width, 0);
+}
+
+TEST(OrganizedCloudCrop, AllPointFormatsLegacyDualAndRgb) {
+    for (const auto profile : {UDPProfileLidar::LEGACY,
+                              UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_DUAL,
+                              UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_RGB16_DUAL})
+        for (const std::string point_type : {"original", "xyz", "xyzi", "o_xyzi", "xyzir",
+                                            "xyzrgb", "xyzrgba", "color_point", "native"})
+            compare_crop(point_type, profile);
+}
+
+TEST(OrganizedCloudCrop, RemainingNativeProfiles) {
+    for (const auto profile : {UDPProfileLidar::RNG19_RFL8_SIG16_NIR16,
+                              UDPProfileLidar::RNG15_RFL8_NIR8,
+                              UDPProfileLidar::RNG15_RFL8_NIR8_DUAL,
+                              UDPProfileLidar::FUSA_RNG15_RFL8_NIR8_DUAL,
+                              UDPProfileLidar::RNG15_RFL8_WIN8,
+                              UDPProfileLidar::RNG15_RFL8_NIR8_ZONE16,
+                              UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_ZONE16,
+                              UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_RGB16})
+        compare_crop("native", profile);
+}
+
+TEST(OrganizedCloudCrop, RetainedMessagesStayUnchanged) {
+    auto info = test_info(UDPProfileLidar::LEGACY);
+    info.format.column_window = {12, 3};
+    info.format.pixel_shift_by_row.assign(HEIGHT, 0);
+    LidarScan scan(WIDTH, HEIGHT, UDPProfileLidar::LEGACY);
+    PointCloudProcessor_OutputType retained;
+    auto processor = PointCloudProcessorFactory::create_point_cloud_processor(
+        "original", info, "os_sensor", false, true, true, 0, UINT32_MAX, 1, "",
+        [&](auto messages) { retained.push_back(messages.front()); }, true);
+    fill_scan(scan, 0); crop_scan_window(scan, info, 0);
+    processor(scan, SCAN_TS, rclcpp::Time(SCAN_TS));
+    const auto snapshot = *retained.front();
+    EXPECT_EQ(snapshot.width, 8u);
+    for (int frame = 1; frame < 4; ++frame) {
+        fill_scan(scan, frame); crop_scan_window(scan, info, frame);
+        processor(scan, SCAN_TS, rclcpp::Time(SCAN_TS + frame));
+        EXPECT_NE(retained[frame].get(), retained[frame - 1].get());
+        EXPECT_NE(retained[frame]->data.data(), retained[frame - 1]->data.data());
+        EXPECT_EQ(snapshot, *retained.front());
+    }
+}
+
+TEST(OrganizedCloudCrop, CartesianTouchesOnlyConsumedSlots) {
+    const int h = 4, w = 16;
+    img_t<uint32_t> range(h, w), mask(h, w);
+    ArrayX3fR direction(h * w, 3), offset(h * w, 3);
+    for (int i = 0; i < h * w; ++i) {
+        range.data()[i] = i % 7 == 0 ? 0 : i % 7 == 1 ? UINT32_MAX : 1000 * i;
+        mask.data()[i] = i % 3 == 0 ? 0 : 1;
+        for (int axis = 0; axis < 3; ++axis) {
+            direction(i, axis) = (i - axis * 10) * 0.0001234567f;
+            offset(i, axis) = (i + axis) * 0.01234567f;
+        }
+    }
+    direction(4, 0) = std::numeric_limits<float>::infinity();
+    direction(5, 1) = std::numeric_limits<float>::quiet_NaN();
+    offset(6, 2) = -std::numeric_limits<float>::infinity();
+    const std::vector<int> shifts = {-16, -2, 1, 3};
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (bool masked : {false, true})
+        for (bool destagger : {false, true})
+            for (int rows : {1, 2, 4})
+                for (int start : {0, 4, 13}) {
+                    PointCloudXYZf full(h * w, 3), cropped(h * w, 3);
+                    cropped.setConstant(-12345.0f);
+                    img_t<uint32_t> selected_mask = masked ? mask : img_t<uint32_t>();
+                    img_t<uint32_t> input = masked ? range * mask : range;
+                    ouster::cartesianT(full, input, direction, offset, 1000, 50000, nan);
+                    ouster::cartesianT_crop(cropped, range, direction, offset,
+                                           1000, 50000, nan, selected_mask,
+                                           start, 7, rows, shifts, destagger);
+                    for (int row = 0; row < h; ++row)
+                        for (int col = 0; col < w; ++col) {
+                            const int output = (col + (destagger ? shifts[row] + w : 0)) % w;
+                            const bool used = row % rows == 0 && (output - start + w) % w < 7;
+                            for (int axis = 0; axis < 3; ++axis) {
+                                const float expected = used ? full(row * w + col, axis) : -12345.0f;
+                                EXPECT_EQ(0, std::memcmp(&expected, &cropped(row * w + col, axis), sizeof(float)));
+                            }
+                        }
+                }
+}
+
+TEST(OrganizedCloudCrop, Full128Beam2048ColumnMessages) {
+    auto info = default_sensor_info(LidarMode::_2048x10);
+    info.format.columns_per_frame = 2048;
+    info.format.pixels_per_column = 128;
+    info.format.udp_profile_lidar = UDPProfileLidar::LEGACY;
+    info.format.pixel_shift_by_row.resize(128);
+    info.beam_azimuth_angles.resize(128);
+    info.beam_altitude_angles.resize(128);
+    for (int row = 0; row < 128; ++row)
+        info.format.pixel_shift_by_row[row] = row % 2 ? 62 : -62;
+    LidarScan scan(2048, 128, UDPProfileLidar::LEGACY);
+    fill_scan(scan, 0);
+    for (int col = 0; col < 2048; ++col)
+        scan.timestamp()[col] = SCAN_TS + col * 1000;
+    for (const int first : {1024, 1536}) {
+        info.format.column_window = {first, 0};
+        auto range = scan.field<uint32_t>(ChanField::RANGE);
+        range.setConstant(10000);
+        for (int col = 0; col < 2048; ++col)
+            if ((col > 0 && col < first) || col % 13 == 0) range.col(col).setZero();
+        PointCloudProcessor_OutputType full, actual;
+        auto full_processor = PointCloudProcessorFactory::create_point_cloud_processor(
+            "original", info, "os_sensor", true, true, true, 0, UINT32_MAX, 1, "",
+            [&](auto messages) { full = std::move(messages); });
+        auto crop_processor = PointCloudProcessorFactory::create_point_cloud_processor(
+            "original", info, "os_sensor", true, true, true, 0, UINT32_MAX, 1, "",
+            [&](auto messages) { actual = std::move(messages); }, true);
+        full_processor(scan, SCAN_TS, rclcpp::Time(SCAN_TS));
+        crop_processor(scan, SCAN_TS, rclcpp::Time(SCAN_TS));
+        ASSERT_EQ(actual.size(), 1u);
+        EXPECT_EQ(actual.front()->width, first == 1024 ? 1149u : 637u);
+        EXPECT_EQ(*actual.front(), reference_crop(*full.front(),
+            cloud_column_window(info, true, true, 1, true)));
+    }
+}

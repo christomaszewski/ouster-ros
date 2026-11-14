@@ -65,6 +65,7 @@ class OusterCloud : public OusterProcessingNodeBase {
         declare_parameter("scan_ring", 0);
         declare_parameter("point_type", "original");
         declare_parameter("organized", true);
+        declare_parameter("organized_cloud_crop", false);
         declare_parameter("destagger", true);
         declare_parameter("min_range", 0.0);
         declare_parameter("max_range", 1000.0);
@@ -145,6 +146,7 @@ class OusterCloud : public OusterProcessingNodeBase {
 
             auto point_type = get_parameter("point_type").as_string();
             auto organized = get_parameter("organized").as_bool();
+            const auto crop = get_parameter("organized_cloud_crop").as_bool();
             auto destagger = get_parameter("destagger").as_bool();
             auto min_range_m = get_parameter("min_range").as_double();
             auto max_range_m = get_parameter("max_range").as_double();
@@ -170,6 +172,15 @@ class OusterCloud : public OusterProcessingNodeBase {
 
             auto mask_path = get_parameter("mask_path").as_string();
 
+            if (crop) {
+                const auto window = cloud_column_window(
+                    info, organized, destagger, v_reduction, true);
+                RCLCPP_INFO(get_logger(),
+                    "Organized cloud crop: source_width=%d, column_origin=%d, width=%d; "
+                    "origin is not serialized in PointCloud2",
+                    info.format.columns_per_frame, window.start, window.width);
+            }
+
             processors.push_back(
                 PointCloudProcessorFactory::create_point_cloud_processor(point_type,
                     info, tf_bcast.point_cloud_frame_id(),
@@ -178,7 +189,7 @@ class OusterCloud : public OusterProcessingNodeBase {
                     [this](PointCloudProcessor_OutputType msgs) {
                         for (size_t i = 0; i < msgs.size(); ++i)
                             lidar_pubs[i]->publish(*msgs[i]);
-                    }
+                    }, crop
                 )
             );
 
