@@ -219,6 +219,7 @@ if(BUILD_TESTING)
     test/point_cloud_compose_test.cpp
     test/point_cloud2_builder_test.cpp
     test/telemetry_limiter_test.cpp
+    test/laser_scan_test.cpp
   )
   ament_target_dependencies(${PROJECT_NAME}_test
     rclcpp
@@ -230,6 +231,12 @@ if(BUILD_TESTING)
     $<INSTALL_INTERFACE:include>
   )
   target_link_libraries(${PROJECT_NAME}_test ouster_ros_library)
+  add_executable(${PROJECT_NAME}_laser_scan_benchmark EXCLUDE_FROM_ALL
+    src/os_ros.cpp test/laser_scan_benchmark.cpp test/frozen_laser_scan.cpp)
+  ament_target_dependencies(${PROJECT_NAME}_laser_scan_benchmark
+    ${ouster_ros_library_deps})
+  target_link_libraries(${PROJECT_NAME}_laser_scan_benchmark ouster_ros_library)
+
 
   ament_add_gtest(${PROJECT_NAME}_lidar_packet_handler_test
     test/lidar_packet_handler_test.cpp
