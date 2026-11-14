@@ -673,3 +673,103 @@ TEST(CartesianPointAccessor, Tile128ExactArithmetic) { compare_cartesian_accesso
 TEST(CartesianPointAccessor, Neon32ExactArithmetic) { compare_cartesian_accessor<32, true>(); }
 TEST(CartesianPointAccessor, Neon64ExactArithmetic) { compare_cartesian_accessor<64, true>(); }
 TEST(CartesianPointAccessor, Neon128ExactArithmetic) { compare_cartesian_accessor<128, true>(); }
+
+namespace {
+struct GpuTestEnv {
+    std::string old_library,old_required;bool had_library=false,had_required=false;
+    GpuTestEnv(const char* library,const char* required) {
+        if(const char* p=std::getenv("OUSTER_GPU_CLOUD_LIBRARY")){old_library=p;had_library=true;}
+        if(const char* p=std::getenv("OUSTER_GPU_CLOUD_REQUIRE")){old_required=p;had_required=true;}
+        if(library)setenv("OUSTER_GPU_CLOUD_LIBRARY",library,1);else unsetenv("OUSTER_GPU_CLOUD_LIBRARY");
+        if(required)setenv("OUSTER_GPU_CLOUD_REQUIRE",required,1);else unsetenv("OUSTER_GPU_CLOUD_REQUIRE");
+    }
+    ~GpuTestEnv(){if(had_library)setenv("OUSTER_GPU_CLOUD_LIBRARY",old_library.c_str(),1);else unsetenv("OUSTER_GPU_CLOUD_LIBRARY");if(had_required)setenv("OUSTER_GPU_CLOUD_REQUIRE",old_required.c_str(),1);else unsetenv("OUSTER_GPU_CLOUD_REQUIRE");}
+};
+struct FakeGpuStats {
+    void* library=dlopen(OUSTER_TEST_GPU_BACKEND_PATH,RTLD_NOW|RTLD_LOCAL);
+    using Reset=void(*)();using Read=void(*)(uint64_t*);
+    Reset reset=nullptr;Read read=nullptr;
+    FakeGpuStats(){if(!library)throw std::runtime_error(dlerror());reset=reinterpret_cast<Reset>(dlsym(library,"ouster_gpu_test_reset"));read=reinterpret_cast<Read>(dlsym(library,"ouster_gpu_test_stats"));if(!reset||!read)throw std::runtime_error("fake GPU stats unavailable");reset();}
+    ~FakeGpuStats(){dlclose(library);}
+    std::array<uint64_t,6> values(){std::array<uint64_t,6> out{};read(out.data());return out;}
+};
+}
+
+TEST(ExperimentalGpuCloud, NativeBytesRetentionReuseAndShutdown) {
+    FakeGpuStats stats;
+    for(bool crop_enabled:{false,true}) {
+        auto info=test_info(UDPProfileLidar::LEGACY);
+        if(crop_enabled){info.format.column_window={12,3};info.format.pixel_shift_by_row={-1,0,1,0,-1,1,0,1};}
+        LidarScan scan(WIDTH,HEIGHT,UDPProfileLidar::LEGACY);PointCloudProcessor_OutputType retained;
+        sensor_msgs::msg::PointCloud2 cpu;
+        LidarScanProcessor reference;
+        {GpuTestEnv disabled(nullptr,nullptr);reference=PointCloudProcessorFactory::create_point_cloud_processor("original",info,"os_sensor",true,true,true,1000,20000,1,"",[&](auto messages){cpu=*messages.front();},crop_enabled,true);}
+        {
+            GpuTestEnv enabled(OUSTER_TEST_GPU_BACKEND_PATH,"1");
+            auto processor=PointCloudProcessorFactory::create_point_cloud_processor("original",info,"os_sensor",true,true,true,1000,20000,1,"",[&](auto messages){retained.push_back(messages.front());},crop_enabled,true);
+            for(int frame=0;frame<4;frame++) {fill_scan(scan,frame);reference(scan,SCAN_TS,rclcpp::Time(SCAN_TS+frame));processor(scan,SCAN_TS,rclcpp::Time(SCAN_TS+frame));EXPECT_EQ(cpu,*retained.back());if(frame)EXPECT_NE(retained[frame]->data.data(),retained[frame-1]->data.data());}
+            const auto snapshot=*retained.front();fill_scan(scan,9);processor(scan,SCAN_TS,rclcpp::Time(SCAN_TS+9));EXPECT_EQ(snapshot,*retained.front());
+        }
+        // Retained CPU-owned messages remain readable after backend destruction.
+        EXPECT_EQ(retained.front()->data.size(),retained.front()->row_step*retained.front()->height);
+    }
+    auto s=stats.values();EXPECT_EQ(s[0],2u);EXPECT_EQ(s[1],10u);EXPECT_EQ(s[2],10u);EXPECT_EQ(s[3],10u);EXPECT_EQ(s[4],2u);EXPECT_EQ(s[5],0u);
+}
+
+TEST(ExperimentalGpuCloud, ExclusiveOutputRegistersOnce) {
+    FakeGpuStats stats;GpuTestEnv enabled(OUSTER_TEST_GPU_BACKEND_PATH,"1");const auto info=test_info(UDPProfileLidar::LEGACY);LidarScan scan(WIDTH,HEIGHT,UDPProfileLidar::LEGACY);
+    const uint8_t* pointer=nullptr;
+    {auto processor=PointCloudProcessorFactory::create_point_cloud_processor("original",info,"os_sensor",false,true,true,0,UINT32_MAX,1,"",[&](auto messages){if(!pointer)pointer=messages.front()->data.data();EXPECT_EQ(pointer,messages.front()->data.data());},false,true);
+     for(int frame=0;frame<5;frame++){fill_scan(scan,frame);processor(scan,SCAN_TS,rclcpp::Time(SCAN_TS+frame));}}
+    auto s=stats.values();EXPECT_EQ(s[1],1u);EXPECT_EQ(s[2],5u);EXPECT_EQ(s[3],1u);EXPECT_EQ(s[4],1u);EXPECT_EQ(s[5],0u);
+}
+
+TEST(ExperimentalGpuCloud, RequiredAndOptionalUnsupportedAndMissingBackend) {
+    const auto info=test_info(UDPProfileLidar::LEGACY);
+    auto make=[&](const char* type,bool organized,bool destagger,int rows){return PointCloudProcessorFactory::create_point_cloud_processor(type,info,"os_sensor",false,organized,destagger,0,UINT32_MAX,rows,"",[](auto){},false,true);};
+    {GpuTestEnv enabled(OUSTER_TEST_GPU_BACKEND_PATH,"1");
+        EXPECT_THROW(make("xyzi",true,true,1),std::invalid_argument);
+        EXPECT_THROW(make("original",false,true,1),std::invalid_argument);
+        EXPECT_THROW(make("original",true,false,1),std::invalid_argument);
+        EXPECT_THROW(make("original",true,true,2),std::invalid_argument);}
+    {GpuTestEnv missing("/definitely/missing/gpu.so","1");
+        EXPECT_THROW(make("original",true,true,1),std::runtime_error);}
+    {GpuTestEnv missing("/definitely/missing/gpu.so",nullptr);
+        EXPECT_NO_THROW(make("original",true,true,1));
+        EXPECT_NO_THROW(make("xyzi",true,true,1));}
+}
+
+TEST(ExperimentalGpuCloud, MutableCallbacksRequireCpuPath) {
+    FakeGpuStats stats;const auto info=test_info(UDPProfileLidar::LEGACY);
+    auto create=[](const SensorInfo& sensor){return PointCloudProcessorFactory::create_point_cloud_processor(
+        "original",sensor,"os_sensor",false,true,true,0,UINT32_MAX,1,"",
+        [](auto messages){auto& data=messages.front()->data;data.reserve(data.capacity()*2);});};
+    {GpuTestEnv required(OUSTER_TEST_GPU_BACKEND_PATH,"1");
+        EXPECT_THROW(create(info),std::invalid_argument);
+    }
+    {GpuTestEnv optional(OUSTER_TEST_GPU_BACKEND_PATH,nullptr);auto processor=create(info);LidarScan scan(WIDTH,HEIGHT,UDPProfileLidar::LEGACY);
+        for(int i=0;i<3;i++){fill_scan(scan,i);processor(scan,SCAN_TS,rclcpp::Time(SCAN_TS+i));}
+    }
+    EXPECT_EQ(stats.values()[0],0u);
+}
+
+TEST(ExperimentalGpuCloud, ReleasePrecedesExplicitBufferGrowth) {
+    FakeGpuStats stats;GpuTestEnv enabled(OUSTER_TEST_GPU_BACKEND_PATH,"1");
+    std::vector<float> direction(WIDTH*HEIGHT*3,0),offset(WIDTH*HEIGHT*3,0);std::vector<int32_t> shifts(HEIGHT,0);
+    ouster_gpu_config config{OUSTER_GPU_ABI_VERSION,sizeof(ouster_gpu_config),WIDTH,HEIGHT,0,WIDTH,0,UINT32_MAX,OUSTER_GPU_REGISTERED_OUTPUT,direction.data(),offset.data(),shifts.data()};
+    sensor_msgs::msg::PointCloud2 message;message.data.resize(WIDTH*HEIGHT*48);
+    LidarScan scan(WIDTH,HEIGHT,UDPProfileLidar::LEGACY);fill_scan(scan,0);bool dense=false;
+    {
+        ExperimentalGpuCloud backend(config);ASSERT_TRUE(backend.compute(scan,SCAN_TS,message,dense));
+        const auto snapshot=message.data;const auto* previous=message.data.data();
+        // Same release hook used before processor-owned message replacement.
+        backend.before_prepare(message,true);
+        EXPECT_EQ(stats.values()[3],1u);
+        message.data.reserve(message.data.capacity()*2);
+        EXPECT_NE(previous,message.data.data());EXPECT_EQ(snapshot,message.data);
+        backend.before_prepare(message,false);
+        ASSERT_TRUE(backend.compute(scan,SCAN_TS,message,dense));
+        EXPECT_EQ(snapshot,message.data);
+    }
+    const auto s=stats.values();EXPECT_EQ(s[1],2u);EXPECT_EQ(s[3],2u);EXPECT_EQ(s[4],1u);EXPECT_EQ(s[5],0u);
+}

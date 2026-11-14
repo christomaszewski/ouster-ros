@@ -105,6 +105,7 @@ target_link_libraries(ouster_ros_library
   # PRIVATE (unsupported)
   ${OUSTER_TARGET_LINKS}
   TIFF::TIFF
+  ${CMAKE_DL_LIBS}
 )
 
 # helper method to construct ouster-ros components
@@ -230,6 +231,11 @@ if(BUILD_TESTING)
     $<INSTALL_INTERFACE:include>
   )
   target_link_libraries(${PROJECT_NAME}_test ouster_ros_library)
+  add_library(ouster_ros_fake_gpu_backend SHARED test/fake_gpu_backend.cpp)
+  target_compile_features(ouster_ros_fake_gpu_backend PRIVATE cxx_std_17)
+  target_compile_definitions(${PROJECT_NAME}_test PRIVATE
+    OUSTER_TEST_GPU_BACKEND_PATH="$<TARGET_FILE:ouster_ros_fake_gpu_backend>")
+  add_dependencies(${PROJECT_NAME}_test ouster_ros_fake_gpu_backend)
 
   ament_add_gtest(${PROJECT_NAME}_lidar_packet_handler_test
     test/lidar_packet_handler_test.cpp

@@ -162,7 +162,9 @@ class OusterDriver : public OusterSensor {
                     [this](PointCloudProcessor_OutputType msgs) {
                         for (size_t i = 0; i < msgs.size(); ++i)
                             lidar_pubs[i]->publish(*msgs[i]);
-                    }, crop
+                    // This callback synchronously publishes by const reference
+                    // and never mutates/reallocates or shares our input buffer.
+                    }, crop, true
                 )
             );
 

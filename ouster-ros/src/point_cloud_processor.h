@@ -19,6 +19,7 @@
 #include "lidar_packet_handler.h"
 #include "impl/cartesian.h"
 #include "cartesian_point_accessor.h"
+#include "experimental_gpu_cloud.h"
 
 namespace ouster_ros {
 
@@ -46,7 +47,9 @@ class PointCloudProcessor {
                         int rows_step, const std::string& mask_path,
                         ScanToCloudFn scan_to_cloud_fn_,
                         PointCloudProcessor_PostProcessingFn post_processing_fn_,
-                        CloudColumnWindow crop = {}, bool destagger = true)
+                        CloudColumnWindow crop = {}, bool destagger = true,
+                        bool organized = true,
+                        bool gpu_immutable_output_callback = false)
         : frame(frame_id),
           pixel_shift_by_row(info.format.pixel_shift_by_row),
           cloud{output_width(info, crop),
@@ -79,6 +82,28 @@ class PointCloudProcessor {
                     mask_path,
                     info.format.pixels_per_column,
                     info.format.columns_per_frame);
+        if (ExperimentalGpuCloud::requested()) {
+            constexpr bool supported_type =
+                std::is_same_v<PointT, ouster_ros::Point> &&
+                std::is_same_v<OutputCloud, PointCloud2Builder<PointT>>;
+            const bool supported = gpu_immutable_output_callback && supported_type && organized && destagger &&
+                rows_step == 1 && mask.size() == 0 && info.num_returns() == 1 &&
+                info.format.udp_profile_lidar == ouster::sdk::core::UDPProfileLidar::LEGACY;
+            if (!supported) {
+                if (ExperimentalGpuCloud::required())
+                    throw std::invalid_argument("Required GPU path needs an explicitly immutable output callback and original LEGACY single-return organized destaggered unmasked clouds with rows_step=1");
+                std::cerr << "EXPERIMENTAL_GPU_CLOUD_CPU_FALLBACK reason=unsupported_cloud_configuration\n";
+            } else {
+                ouster_gpu_config config{OUSTER_GPU_ABI_VERSION, sizeof(ouster_gpu_config),
+                    static_cast<uint32_t>(info.format.columns_per_frame),
+                    static_cast<uint32_t>(info.format.pixels_per_column),
+                    static_cast<uint32_t>(crop.width ? crop.start : 0),
+                    static_cast<uint32_t>(output_width(info, crop)), min_range, max_range,
+                    OUSTER_GPU_REGISTERED_OUTPUT, lut_direction.data(), lut_offset.data(),
+                    pixel_shift_by_row.data()};
+                gpu_ = std::make_unique<ExperimentalGpuCloud>(config);
+            }
+        }
     }
 
    private:
@@ -143,10 +168,23 @@ class PointCloudProcessor {
             // messages still exclusively owned by this processor. publish(const
             // Message&) consumes/copies the input before returning; retained
             // shared messages take the fresh-buffer path below.
-            if (!pc_msgs[i].unique())
+            const bool replacing = !pc_msgs[i].unique();
+            if (gpu_ && gpu_->enabled()) gpu_->before_prepare(*pc_msgs[i], replacing);
+            if (replacing)
                 pc_msgs[i] = std::make_shared<sensor_msgs::msg::PointCloud2>();
             if constexpr (std::is_same_v<OutputCloud, PointCloud2Builder<PointT>>)
                 cloud.attach(*pc_msgs[i]);
+            bool gpu_complete = false;
+            if constexpr (std::is_same_v<PointT, ouster_ros::Point> &&
+                          std::is_same_v<OutputCloud, PointCloud2Builder<PointT>>) {
+                if (gpu_ && gpu_->enabled()) {
+                    cloud.prepare(true);
+                    bool dense = false;
+                    gpu_complete = gpu_->compute(lidar_scan, scan_ts, *pc_msgs[i], dense);
+                    if (gpu_complete) cloud.finish(dense);
+                }
+            }
+            if (!gpu_complete) {
             auto range_channel = i == 0 ? ChanField::RANGE : ChanField::RANGE2;
             auto range = lidar_scan.field<uint32_t>(range_channel);
             if constexpr (std::is_same_v<Coordinates, ouster::sdk::core::PointCloudXYZf>) {
@@ -173,6 +211,7 @@ class PointCloudProcessor {
                 scan_to_cloud_fn(cloud, coordinates, scan_ts, lidar_scan,
                                  pixel_shift_by_row, i);
             }
+            }
 
             if constexpr (std::is_same_v<OutputCloud, Cloud<PointT>>)
                 pcl_toROSMsg(cloud, *pc_msgs[i]);
@@ -191,11 +230,14 @@ class PointCloudProcessor {
                                      int rows_step, const std::string& mask_path,
                                      ScanToCloudFn scan_to_cloud_fn_,
                                      PointCloudProcessor_PostProcessingFn post_processing_fn,
-                                     CloudColumnWindow crop = {}, bool destagger = true) {
+                                     CloudColumnWindow crop = {}, bool destagger = true,
+                                     bool organized = true,
+                                     bool gpu_immutable_output_callback = false) {
         auto handler = std::make_shared<PointCloudProcessor>(
             info, frame, apply_lidar_to_sensor_transform,
             min_range, max_range, rows_step, mask_path,
-            scan_to_cloud_fn_, post_processing_fn, crop, destagger);
+            scan_to_cloud_fn_, post_processing_fn, crop, destagger, organized,
+            gpu_immutable_output_callback);
 
         return [handler](const ouster::sdk::core::LidarScan& lidar_scan, uint64_t scan_ts,
                          const rclcpp::Time& msg_ts) {
@@ -225,6 +267,8 @@ class PointCloudProcessor {
     CloudColumnWindow crop_;
     bool crop_destagger_;
     int rows_step_;
+    // Destroy/unregister before pc_msgs and its data allocations are destroyed.
+    std::unique_ptr<ExperimentalGpuCloud> gpu_;
 };
 
 }  // namespace ouster_ros

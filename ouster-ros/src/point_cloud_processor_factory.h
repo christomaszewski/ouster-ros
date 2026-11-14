@@ -209,13 +209,14 @@ class PointCloudProcessorFactory {
         uint32_t min_range, uint32_t max_range, int rows_step,
         const std::string& mask_path,
         PointCloudProcessor_PostProcessingFn post_processing_fn,
-        CloudColumnWindow crop) {
+        CloudColumnWindow crop, bool gpu_immutable_output_callback) {
         auto scan_to_cloud_fn = make_scan_to_cloud_fn<PointT>(
             info, organized, destagger, rows_step, crop);
         return PointCloudProcessor<PointT, PointCloud2Builder<PointT>, CartesianPointAccessor>::create(
             info, frame, apply_lidar_to_sensor_transform,
             min_range, max_range, rows_step, mask_path,
-            scan_to_cloud_fn, post_processing_fn, crop, destagger);
+            scan_to_cloud_fn, post_processing_fn, crop, destagger, organized,
+            gpu_immutable_output_callback);
     }
 
    public:
@@ -241,7 +242,8 @@ class PointCloudProcessorFactory {
         uint32_t min_range, uint32_t max_range, int rows_step,
         const std::string& mask_path,
         PointCloudProcessor_PostProcessingFn post_processing_fn,
-        bool organized_cloud_crop = false) {
+        bool organized_cloud_crop = false,
+        bool gpu_immutable_output_callback = false) {
         const auto crop = cloud_column_window(
             info, organized, destagger, rows_step, organized_cloud_crop);
         if (point_type == "native") {
@@ -250,58 +252,58 @@ class PointCloudProcessorFactory {
                     return make_point_cloud_processor<Point_LEGACY>(
                         info, frame, apply_lidar_to_sensor_transform,
                         organized, destagger, min_range, max_range, rows_step,
-                        mask_path, post_processing_fn, crop);
+                        mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
                 case UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_DUAL:
                     return make_point_cloud_processor<
                         Point_RNG19_RFL8_SIG16_NIR16_DUAL>(
                         info, frame, apply_lidar_to_sensor_transform,
                         organized, destagger, min_range, max_range, rows_step,
-                        mask_path, post_processing_fn, crop);
+                        mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
                 case UDPProfileLidar::RNG19_RFL8_SIG16_NIR16:
                     return make_point_cloud_processor<
                         Point_RNG19_RFL8_SIG16_NIR16>(
                         info, frame, apply_lidar_to_sensor_transform,
                         organized, destagger, min_range, max_range, rows_step,
-                        mask_path, post_processing_fn, crop);
+                        mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
                 case UDPProfileLidar::RNG15_RFL8_NIR8:
                     return make_point_cloud_processor<Point_RNG15_RFL8_NIR8>(
                         info, frame, apply_lidar_to_sensor_transform,
                         organized, destagger, min_range, max_range, rows_step,
-                        mask_path, post_processing_fn, crop);
+                        mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
                 case UDPProfileLidar::FUSA_RNG15_RFL8_NIR8_DUAL:
                 case UDPProfileLidar::RNG15_RFL8_NIR8_DUAL:
                     return make_point_cloud_processor<
                         Point_RNG15_RFL8_NIR8_DUAL>(
                         info, frame, apply_lidar_to_sensor_transform,
                         organized, destagger, min_range, max_range, rows_step,
-                        mask_path, post_processing_fn, crop);
+                        mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
                 case UDPProfileLidar::RNG15_RFL8_WIN8:
                     return make_point_cloud_processor<Point_RNG15_RFL8_WIN8>(
                         info, frame, apply_lidar_to_sensor_transform,
                         organized, destagger, min_range, max_range, rows_step,
-                        mask_path, post_processing_fn, crop);
+                        mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
                 case UDPProfileLidar::RNG15_RFL8_NIR8_ZONE16:
                     return make_point_cloud_processor<Point_RNG15_RFL8_NIR8_ZONE16>(
                         info, frame, apply_lidar_to_sensor_transform,
                         organized, destagger, min_range, max_range, rows_step,
-                        mask_path, post_processing_fn, crop);
+                        mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
                 case UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_ZONE16:
                     return make_point_cloud_processor<Point_RNG19_RFL8_SIG16_NIR16_ZONE16>(
                         info, frame, apply_lidar_to_sensor_transform,
                         organized, destagger, min_range, max_range, rows_step,
-                        mask_path, post_processing_fn, crop);
+                        mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
                 case UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_RGB16:
                         return make_point_cloud_processor<
                             Point_RNG19_RFL8_SIG16_NIR16_RGB16>(
                             info, frame, apply_lidar_to_sensor_transform,
                             organized, destagger, min_range, max_range, rows_step,
-                            mask_path, post_processing_fn, crop);
+                            mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
                 case UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_RGB16_DUAL:
                         return make_point_cloud_processor<
                             Point_RNG19_RFL8_SIG16_NIR16_RGB16_DUAL>(
                             info, frame, apply_lidar_to_sensor_transform,
                             organized, destagger, min_range, max_range, rows_step,
-                            mask_path, post_processing_fn, crop);
+                            mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
                 default:
                     // TODO: implement fallback?
                     throw std::runtime_error("unsupported udp_profile_lidar");
@@ -310,42 +312,42 @@ class PointCloudProcessorFactory {
             return make_point_cloud_processor<pcl::PointXYZ>(
                 info, frame, apply_lidar_to_sensor_transform,
                 organized, destagger, min_range, max_range, rows_step,
-                mask_path, post_processing_fn, crop);
+                mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
         } else if (point_type == "xyzi") {
             return make_point_cloud_processor<pcl::PointXYZI>(
                 info, frame, apply_lidar_to_sensor_transform,
                 organized, destagger, min_range, max_range, rows_step,
-                mask_path, post_processing_fn, crop);
+                mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
         } else if (point_type == "o_xyzi") {
             return make_point_cloud_processor<ouster_ros::PointXYZI>(
                 info, frame, apply_lidar_to_sensor_transform,
                 organized, destagger, min_range, max_range, rows_step,
-                mask_path, post_processing_fn, crop);
+                mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
         } else if (point_type == "xyzir") {
             return make_point_cloud_processor<PointXYZIR>(
                 info, frame, apply_lidar_to_sensor_transform,
                 organized, destagger, min_range, max_range, rows_step,
-                mask_path, post_processing_fn, crop);
+                mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
         } else if (point_type == "xyzrgb") {
             return make_point_cloud_processor<pcl::PointXYZRGB>(
                 info, frame, apply_lidar_to_sensor_transform,
                 organized, destagger, min_range, max_range, rows_step,
-                mask_path, post_processing_fn, crop);
+                mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
         } else if (point_type == "xyzrgba") {
             return make_point_cloud_processor<pcl::PointXYZRGBA>(
                 info, frame, apply_lidar_to_sensor_transform,
                 organized, destagger, min_range, max_range, rows_step,
-                mask_path, post_processing_fn, crop);
+                mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
         } else if (point_type == "original") {
             return make_point_cloud_processor<ouster_ros::Point>(
                 info, frame, apply_lidar_to_sensor_transform,
                 organized, destagger, min_range, max_range, rows_step,
-                mask_path, post_processing_fn, crop);
+                mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
         } else if (point_type == "color_point") {
             return make_point_cloud_processor<ouster_ros::ColorPoint>(
                 info, frame, apply_lidar_to_sensor_transform,
                 organized, destagger, min_range, max_range, rows_step,
-                mask_path, post_processing_fn, crop);
+                mask_path, post_processing_fn, crop, gpu_immutable_output_callback);
         }
 
         throw std::runtime_error(
