@@ -604,3 +604,72 @@ TEST(OrganizedCloudCrop, Full128Beam2048ColumnMessages) {
             cloud_column_window(info, true, true, 1, true)));
     }
 }
+
+
+namespace {
+template <size_t TileSize, bool Neon>
+void compare_cartesian_accessor() {
+    // Deliberately not tile aligned; include mask overflow, threshold boundaries,
+    // uint32 conversion, cancellation, subnormals, infinities, signed zero/NaN.
+    constexpr int count = 137;
+    img_t<uint32_t> range(1, count), mask(1, count);
+    ArrayX3fR direction(count, 3), offset(count, 3);
+    for (int i = 0; i < count; ++i) {
+        range.data()[i] = static_cast<uint32_t>(i) * 2654435761u;
+        mask.data()[i] = i % 5 == 0 ? 0 : i % 5 == 1 ? 3 : 1;
+        for (int axis = 0; axis < 3; ++axis) {
+            direction(i, axis) = (i - 70 + axis) * 0.0001234567f;
+            offset(i, axis) = -(i + axis) * 0.1234567f;
+        }
+    }
+    range.data()[0] = 0; range.data()[1] = 1000; range.data()[2] = UINT32_MAX;
+    range.data()[3] = UINT32_MAX - 1; range.data()[4] = 1001;
+    direction(5, 0) = std::numeric_limits<float>::quiet_NaN();
+    direction(6, 1) = std::numeric_limits<float>::infinity();
+    offset(6, 1) = -std::numeric_limits<float>::infinity();
+    direction(7, 2) = -0.0f; offset(7, 2) = -0.0f;
+    direction(8, 0) = std::numeric_limits<float>::denorm_min();
+    for (const bool masked : {false, true}) {
+        PointCloudXYZf expected(count, 3);
+        img_t<uint32_t> input = masked ? range * mask : range;
+        ouster::cartesianT(expected, input, direction, offset, 1000, UINT32_MAX,
+                           std::numeric_limits<float>::quiet_NaN());
+        if constexpr (Neon) {
+            // Explicit SIMD FMA promises the production ARM64 -O3 result.
+            // Sanitizer/-O1 instrumentation can inhibit contraction in the
+            // scalar reference, so use a single-rounding oracle for this
+            // experimental SIMD path. Scalar fusion still compares directly
+            // with cartesianT above under every tested build configuration.
+            for (int i = 0; i < count; ++i) {
+                const uint32_t r = input.data()[i];
+                if (r <= 1000 || r >= UINT32_MAX) continue;
+                for (int axis = 0; axis < 3; ++axis)
+                    expected(i, axis) = std::fma(static_cast<float>(r),
+                        direction(i, axis), offset(i, axis));
+            }
+        }
+        CartesianPointRows<TileSize, Neon> actual(range.data(), count,
+            direction.data(), offset.data(), 1000, UINT32_MAX,
+            masked ? mask.data() : nullptr);
+        // Sequential and shuffled requests exercise tile reuse and revisits.
+        for (int pass = 0; pass < 2; ++pass)
+            for (int i = 0; i < count; ++i) {
+                const int index = pass ? (i * 53) % count : i;
+                const auto xyz = actual.row(index);
+                for (int axis = 0; axis < 3; ++axis)
+                    EXPECT_EQ(0, std::memcmp(&expected(index, axis),
+                                             xyz.data() + axis, sizeof(float)))
+                        << "tile=" << TileSize << " neon=" << Neon
+                        << " index=" << index << " axis=" << axis;
+            }
+    }
+}
+}
+
+TEST(CartesianPointAccessor, ScalarExactArithmetic) { compare_cartesian_accessor<0, false>(); }
+TEST(CartesianPointAccessor, Tile32ExactArithmetic) { compare_cartesian_accessor<32, false>(); }
+TEST(CartesianPointAccessor, Tile64ExactArithmetic) { compare_cartesian_accessor<64, false>(); }
+TEST(CartesianPointAccessor, Tile128ExactArithmetic) { compare_cartesian_accessor<128, false>(); }
+TEST(CartesianPointAccessor, Neon32ExactArithmetic) { compare_cartesian_accessor<32, true>(); }
+TEST(CartesianPointAccessor, Neon64ExactArithmetic) { compare_cartesian_accessor<64, true>(); }
+TEST(CartesianPointAccessor, Neon128ExactArithmetic) { compare_cartesian_accessor<128, true>(); }

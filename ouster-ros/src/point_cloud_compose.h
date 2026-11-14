@@ -135,9 +135,9 @@ class PclCloudWriter {
 };
 
 template <std::size_t N, const ChanFieldTable<N>& PROFILE, bool Cropped,
-          typename Writer, typename PointS>
+          typename Writer, typename PointS, typename Coordinates>
 void scan_to_cloud_impl(Writer& cloud, PointS& staging_point,
-                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
+                     const Coordinates& points, uint64_t scan_ts,
                      const ouster::sdk::core::LidarScan& ls,
                      const std::vector<int>& pixel_shift_by_row,
                      bool organized = false, bool destagger = true,
@@ -222,9 +222,9 @@ void scan_to_cloud_impl(Writer& cloud, PointS& staging_point,
 }
 
 template <std::size_t N, const ChanFieldTable<N>& PROFILE, typename PointT,
-          typename PointS>
+          typename PointS, typename Coordinates>
 void scan_to_cloud_f(Cloud<PointT>& cloud, PointS& staging_point,
-                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
+                     const Coordinates& points, uint64_t scan_ts,
                      const ouster::sdk::core::LidarScan& ls,
                      const std::vector<int>& pixel_shift_by_row,
                      bool organized = false, bool destagger = true,
@@ -242,9 +242,9 @@ void scan_to_cloud_f(Cloud<PointT>& cloud, PointS& staging_point,
 }
 
 template <std::size_t N, const ChanFieldTable<N>& PROFILE, typename PointT,
-          typename PointS>
+          typename PointS, typename Coordinates>
 void scan_to_cloud_f(PointCloud2Builder<PointT>& writer, PointS& staging_point,
-                     const ouster::sdk::core::PointCloudXYZf& points, uint64_t scan_ts,
+                     const Coordinates& points, uint64_t scan_ts,
                      const ouster::sdk::core::LidarScan& ls,
                      const std::vector<int>& pixel_shift_by_row,
                      bool organized = false, bool destagger = true,

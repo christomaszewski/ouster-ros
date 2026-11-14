@@ -18,6 +18,7 @@
 #include "point_cloud_compose.h"
 #include "lidar_packet_handler.h"
 #include "impl/cartesian.h"
+#include "cartesian_point_accessor.h"
 
 namespace ouster_ros {
 
@@ -27,11 +28,12 @@ using PointCloudProcessor_OutputType =
 using PointCloudProcessor_PostProcessingFn = std::function<void(PointCloudProcessor_OutputType)>;
 
 
-template <class PointT, class OutputCloud = Cloud<PointT>>
+template <class PointT, class OutputCloud = Cloud<PointT>,
+          class Coordinates = ouster::sdk::core::PointCloudXYZf>
 class PointCloudProcessor {
    public:
     using ScanToCloudFn = std::function<void(OutputCloud& cloud,
-                                        const ouster::sdk::core::PointCloudXYZf& points,
+                                        const Coordinates& points,
                                         uint64_t scan_ts, const ouster::sdk::core::LidarScan& ls,
                                         const std::vector<int>& pixel_shift_by_row,
                                         int return_index)>;
@@ -70,7 +72,8 @@ class PointCloudProcessor {
         // cloud xyz coordinates using double precision (for the time being).
         lut_direction = xyz_lut.direction.cast<float>();
         lut_offset = xyz_lut.offset.cast<float>();
-        points = ouster::sdk::core::PointCloudXYZf(lut_direction.rows(), lut_offset.cols());
+        if constexpr (std::is_same_v<Coordinates, ouster::sdk::core::PointCloudXYZf>)
+            points = ouster::sdk::core::PointCloudXYZf(lut_direction.rows(), lut_offset.cols());
 
         mask = impl::load_mask<uint32_t>(
                     mask_path,
@@ -146,20 +149,30 @@ class PointCloudProcessor {
                 cloud.attach(*pc_msgs[i]);
             auto range_channel = i == 0 ? ChanField::RANGE : ChanField::RANGE2;
             auto range = lidar_scan.field<uint32_t>(range_channel);
-            if (crop_.width) {
-                ouster::cartesianT_crop(
-                    points, range, lut_direction, lut_offset, min_range_, max_range_,
-                    std::numeric_limits<float>::quiet_NaN(), mask, crop_.start,
-                    crop_.width, rows_step_, pixel_shift_by_row, crop_destagger_);
-            } else {
-                auto range_masked = mask.size() != 0 ? range * mask : range;
-                ouster::cartesianT(points, range_masked, lut_direction, lut_offset,
-                                   min_range_, max_range_,
-                                   std::numeric_limits<float>::quiet_NaN());
-            }
+            if constexpr (std::is_same_v<Coordinates, ouster::sdk::core::PointCloudXYZf>) {
+                if (crop_.width) {
+                    ouster::cartesianT_crop(
+                        points, range, lut_direction, lut_offset, min_range_, max_range_,
+                        std::numeric_limits<float>::quiet_NaN(), mask, crop_.start,
+                        crop_.width, rows_step_, pixel_shift_by_row, crop_destagger_);
+                } else {
+                    auto range_masked = mask.size() != 0 ? range * mask : range;
+                    ouster::cartesianT(points, range_masked, lut_direction, lut_offset,
+                                       min_range_, max_range_,
+                                       std::numeric_limits<float>::quiet_NaN());
+                }
 
-            scan_to_cloud_fn(cloud, points, scan_ts, lidar_scan,
-                                        pixel_shift_by_row, i);
+                scan_to_cloud_fn(cloud, points, scan_ts, lidar_scan,
+                                            pixel_shift_by_row, i);
+            } else {
+                // The lazy accessor computes only the slots consumed by packing,
+                // retaining the same float expressions and range-mask arithmetic.
+                Coordinates coordinates(range.data(), range.size(), lut_direction.data(),
+                                        lut_offset.data(), min_range_, max_range_,
+                                        mask.size() ? mask.data() : nullptr);
+                scan_to_cloud_fn(cloud, coordinates, scan_ts, lidar_scan,
+                                 pixel_shift_by_row, i);
+            }
 
             if constexpr (std::is_same_v<OutputCloud, Cloud<PointT>>)
                 pcl_toROSMsg(cloud, *pc_msgs[i]);
