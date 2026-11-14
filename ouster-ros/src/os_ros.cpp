@@ -22,7 +22,9 @@
 
 #include <tf2_eigen/tf2_eigen.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <limits>
 #include <string>
 #include <vector>
 #include <regex>
@@ -237,23 +239,48 @@ sensor_msgs::msg::LaserScan lidar_scan_to_laser_scan_msg(
 
     auto which_range = return_index == 0 ? ChanField::RANGE
                                          : ChanField::RANGE2;
-    ouster::sdk::core::img_t<uint32_t> range = ls.field<uint32_t>(which_range);
+    // The scan owns this immutable view throughout this synchronous call.
+    const auto range = ls.field<uint32_t>(which_range);
     auto which_signal = return_index == 0 ? ChanField::SIGNAL
                                           : ChanField::SIGNAL2;
-    ouster::sdk::core::img_t<uint32_t> signal =
-        impl::get_or_fill_zero<uint32_t>(which_signal, ls);
-    const auto rg = range.data();
-    const auto sg = signal.data();
     msg.ranges.resize(ls.w);
-    msg.intensities.resize(ls.w);
+    msg.intensities.resize(ls.w);  // Missing SIGNAL historically produces zeros.
+    if (ls.w == 0) return msg;
 
-    uint16_t u = ring;
-    for (int v =  0; v < static_cast<int>(ls.w); ++v) {
-        auto v_shift = (v + ls.w - pixel_shift_by_row[u] + ls.w / 2) % ls.w;
-        auto src_idx = u * ls.w + v_shift;
-        auto tgt_idx = ls.w - 1 - v;
-        msg.ranges[tgt_idx] = rg[src_idx] * ouster::sdk::core::RANGE_UNIT;
-        msg.intensities[tgt_idx] = static_cast<float>(sg[src_idx]);
+    const size_t row = static_cast<size_t>(ring) * ls.w;
+    // Match the original size_t arithmetic, including unsigned wrap for large
+    // firmware shifts. Each rotation is two contiguous spans, without a modulo
+    // per point. The extra split preserves legacy results even for synthetic
+    // non-power-of-two widths when the unsigned addition wraps mid-row.
+    const size_t offset = ls.w - static_cast<size_t>(pixel_shift_by_row[ring]) + ls.w / 2;
+    const size_t before_wrap = std::numeric_limits<size_t>::max() - offset;
+    const auto for_each_span = [&](auto&& consume) {
+        const auto rotation = [&](size_t target, size_t count, size_t source) {
+            const size_t first = std::min(count, ls.w - source);
+            consume(target, row + source, first);
+            consume(target + first, row, count - first);
+        };
+        if (before_wrap < ls.w - 1) {
+            const size_t count = before_wrap + 1;
+            rotation(0, count, offset % ls.w);
+            rotation(count, ls.w - count, 0);
+        } else {
+            rotation(0, ls.w, offset % ls.w);
+        }
+    };
+    for_each_span([&](size_t target, size_t source, size_t count) {
+        for (size_t i = 0; i < count; ++i)
+            msg.ranges[ls.w - 1 - target - i] =
+                range.data()[source + i] * ouster::sdk::core::RANGE_UNIT;
+    });
+    if (ls.has_field(which_signal)) {
+        ouster::sdk::core::impl::visit_field(ls, which_signal, [&](const auto& field) {
+            for_each_span([&](size_t target, size_t source, size_t count) {
+                for (size_t i = 0; i < count; ++i)
+                    msg.intensities[ls.w - 1 - target - i] =
+                        static_cast<float>(static_cast<uint32_t>(field.data()[source + i]));
+            });
+        });
     }
 
     return msg;
