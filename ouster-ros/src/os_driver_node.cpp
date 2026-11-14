@@ -23,6 +23,7 @@
 #include "image_processor.h"
 #include "point_cloud_processor_factory.h"
 #include "telemetry_handler.h"
+#include "telemetry_limiter.h"
 
 namespace ouster_ros {
 
@@ -39,6 +40,12 @@ class OusterDriver : public OusterSensor {
         tf_bcast.declare_parameters();
         tf_bcast.parse_parameters();
         declare_parameter("proc_mask", "IMU|PCL|SCAN|IMG|RAW|TLM");
+        rcl_interfaces::msg::ParameterDescriptor telemetry_policy;
+        telemetry_policy.description =
+            "Maximum heartbeat rate for unchanged telemetry; 0 publishes every "
+            "lidar packet. Status/countdown changes publish immediately. "
+            "Read when publishers are configured.";
+        declare_parameter("telemetry_max_rate_hz", 0.0, telemetry_policy);
         declare_parameter("scan_ring", 0);
         declare_parameter("ptp_utc_tai_offset", -37.0);
         declare_parameter("point_type", "original");
@@ -245,6 +252,8 @@ class OusterDriver : public OusterSensor {
                 min_scan_valid_columns_ratio);
 
         if (impl::check_token(tokens, "TLM")) {
+            telemetry_limiter = TelemetryLimiter(
+                get_parameter("telemetry_max_rate_hz").as_double());
             telemetry_pub =
                 create_publisher<ouster_sensor_msgs::msg::Telemetry>("telemetry",
                                                                      selected_qos);
@@ -261,7 +270,8 @@ class OusterDriver : public OusterSensor {
     virtual void on_lidar_packet_msg(const LidarPacket& lidar_packet) override {
         if (telemetry_handler) {
             auto telemetry = telemetry_handler(lidar_packet);
-            telemetry_pub->publish(telemetry);
+            if (telemetry_limiter.should_publish(telemetry))
+                telemetry_pub->publish(telemetry);
         }
 
         if (lidar_packet_handler)
@@ -312,6 +322,7 @@ class OusterDriver : public OusterSensor {
 
     rclcpp::Publisher<ouster_sensor_msgs::msg::Telemetry>::SharedPtr telemetry_pub;
     TelemetryHandler::HandlerType telemetry_handler;
+    TelemetryLimiter telemetry_limiter;
 };
 
 }  // namespace ouster_ros
