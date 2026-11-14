@@ -149,6 +149,39 @@ class ImageProcessor {
         if (mask.size() != 0) output = output * mask;
     }
 
+    template <typename Function>
+    void for_each_row_span(Function&& function) const {
+        const size_t width = info_.format.columns_per_frame;
+        for (size_t row = 0; row < row_shifts.size(); ++row) {
+            const size_t base = row * width;
+            const size_t split = row_shifts[row];
+            function(base, base + width - split, split);
+            function(base + split, base, width - split);
+        }
+    }
+
+    template <typename Integer>
+    void read_destaggered_float(const ouster::sdk::core::LidarScan& scan,
+                               const std::string& channel,
+                               ouster::sdk::core::img_t<float>& output) {
+        output.resize(info_.format.pixels_per_column, info_.format.columns_per_frame);
+        if (!scan.has_field(channel)) {
+            output.setZero();
+            return;
+        }
+        // Dispatch the SDK field type once per channel. The narrowing cast is
+        // deliberate: reflectivity/near-IR historically pass through uint16,
+        // and signal through uint32, before conversion to float.
+        ouster::sdk::core::impl::visit_field(scan, channel, [&](const auto& field) {
+            const auto* source = field.data();
+            auto* target = output.data();
+            for_each_row_span([&](size_t to, size_t from, size_t count) {
+                for (size_t i = 0; i < count; ++i)
+                    target[to + i] = static_cast<float>(static_cast<Integer>(source[from + i]));
+            });
+        });
+    }
+
     template <typename T>
     void read_field(const ouster::sdk::core::LidarScan& scan,
                     const std::string& channel,
@@ -162,6 +195,17 @@ class ImageProcessor {
             buffer.resize(info_.format.pixels_per_column, info_.format.columns_per_frame);
             buffer.setZero();
         }
+    }
+
+    const uint8_t* read_rgb_field(const ouster::sdk::core::LidarScan& scan,
+                                 const std::string& channel,
+                                 ouster::sdk::core::img_t<uint8_t>& fallback) {
+        if (scan.has_field(channel) && scan.field_type(channel).element_type ==
+                                      ouster::sdk::core::ChanFieldType::UINT8)
+            return scan.field<uint8_t>(channel).data();
+        // Retain narrowing and zero-fill behavior for nonstandard/missing RGB.
+        read_field(scan, channel, fallback);
+        return fallback.data();
     }
 
     void process_return(const ouster::sdk::core::LidarScan& lidar_scan,
@@ -187,9 +231,25 @@ class ImageProcessor {
 
         const uint32_t H = info_.format.pixels_per_column;
         const uint32_t W = info_.format.columns_per_frame;
+        const auto native_field = [&](bool needed, const std::string& channel,
+                                      ouster::sdk::core::ChanFieldType type) {
+            return !needed || (lidar_scan.has_field(channel) &&
+                              lidar_scan.field_type(channel).element_type == type);
+        };
+        // All standard decoded profiles use these storage types. Combine their
+        // reads in the existing destagger traversal; unusual user-selected field
+        // storage keeps the generic narrowing/conversion path below.
+        const bool native = (int(signal_needed) + int(reflectivity_needed) + int(nearir_output) > 1) &&
+            native_field(signal_needed, signal_channel, ouster::sdk::core::ChanFieldType::UINT16) &&
+            native_field(reflectivity_needed, reflectivity_channel, ouster::sdk::core::ChanFieldType::UINT8) &&
+            native_field(nearir_output, ChanField::NEAR_IR, ouster::sdk::core::ChanFieldType::UINT16);
+        const uint16_t* signal_source = nullptr;
+        const uint8_t* reflectivity_source = nullptr;
+        const uint16_t* nearir_source = nullptr;
         const uint32_t* range = nullptr;
         pixel_type* range_pixels = nullptr;
         uint8_t* rgb_pixels = nullptr;
+        const uint8_t *red_source = nullptr, *green_source = nullptr, *blue_source = nullptr;
         if (range_output) {
             // The scan owns this immutable field for the entire synchronous
             // processor call; no staging copy is needed for range.
@@ -198,48 +258,54 @@ class ImageProcessor {
                 image_msgs.at(range_channel)->data.data());
         }
         if (signal_needed) {
-            read_field(lidar_scan, signal_channel, signal);
-            signal_image.resize(H, W);
+            if (native) {
+                signal_image.resize(H, W);
+                signal_source = lidar_scan.field<uint16_t>(signal_channel).data();
+            } else read_destaggered_float<uint32_t>(lidar_scan, signal_channel, signal_image);
         }
         if (reflectivity_needed) {
-            read_field(lidar_scan, reflectivity_channel, reflectivity);
-            reflectivity_image.resize(H, W);
+            if (native) {
+                reflectivity_image.resize(H, W);
+                reflectivity_source = lidar_scan.field<uint8_t>(reflectivity_channel).data();
+            } else read_destaggered_float<uint16_t>(lidar_scan, reflectivity_channel, reflectivity_image);
         }
         if (nearir_output) {
-            read_field(lidar_scan, ChanField::NEAR_IR, near_ir);
-            nearir_image.resize(H, W);
+            if (native) {
+                nearir_image.resize(H, W);
+                nearir_source = lidar_scan.field<uint16_t>(ChanField::NEAR_IR).data();
+            } else read_destaggered_float<uint16_t>(lidar_scan, ChanField::NEAR_IR, nearir_image);
         }
         if (rgb_output) {
-            read_field(lidar_scan, ChanField::R_U8, red);
-            read_field(lidar_scan, ChanField::G_U8, green);
-            read_field(lidar_scan, ChanField::B_U8, blue);
+            red_source = read_rgb_field(lidar_scan, ChanField::R_U8, red);
+            green_source = read_rgb_field(lidar_scan, ChanField::G_U8, green);
+            blue_source = read_rgb_field(lidar_scan, ChanField::B_U8, blue);
             rgb_pixels = image_msgs.at(ChanField::RGB)->data.data();
         }
 
-        const auto process_pixel = [&](size_t target, size_t source) {
+        const auto process_pixel = [&](auto native_tag, size_t target, size_t source) {
             if (range_output) {
                 const auto r = (range[source] + 0b10) >> 2;
                 range_pixels[target] = r > pixel_value_max ? 0 : r;
             }
-            if (signal_needed) signal_image.data()[target] = signal.data()[source];
-            if (reflectivity_needed)
-                reflectivity_image.data()[target] = reflectivity.data()[source];
-            if (nearir_output) nearir_image.data()[target] = near_ir.data()[source];
+            if constexpr (decltype(native_tag)::value) {
+                if (signal_needed) signal_image.data()[target] = signal_source[source];
+                if (reflectivity_needed) reflectivity_image.data()[target] = reflectivity_source[source];
+                if (nearir_output) nearir_image.data()[target] = nearir_source[source];
+            }
             if (rgb_output) {
-                rgb_pixels[3 * target] = red.data()[source];
-                rgb_pixels[3 * target + 1] = green.data()[source];
-                rgb_pixels[3 * target + 2] = blue.data()[source];
+                rgb_pixels[3 * target] = red_source[source];
+                rgb_pixels[3 * target + 1] = green_source[source];
+                rgb_pixels[3 * target + 2] = blue_source[source];
             }
         };
-        for (size_t u = 0; u < H; ++u) {
-            const size_t row = u * W;
-            const size_t split = row_shifts[u];
-            // A destaggered row is two contiguous source spans. Keep the old
-            // destination order without a modulo or wrap branch per pixel.
-            const size_t tail = row + W - split;
-            for (size_t v = 0; v < split; ++v) process_pixel(row + v, tail + v);
-            for (size_t v = split; v < W; ++v) process_pixel(row + v, row + v - split);
-        }
+        if (native)
+            for_each_row_span([&](size_t to, size_t from, size_t count) {
+                for (size_t i = 0; i < count; ++i) process_pixel(std::true_type{}, to + i, from + i);
+            });
+        else if (range_output || rgb_output)
+            for_each_row_span([&](size_t to, size_t from, size_t count) {
+                for (size_t i = 0; i < count; ++i) process_pixel(std::false_type{}, to + i, from + i);
+            });
 
         if (signal_needed) {
             signal_ae.update(signal_image, first);
@@ -303,8 +369,6 @@ class ImageProcessor {
     // Only demanded channel families resize these buffers. Retain allocations
     // between frames/returns; the native processing thread is their sole owner.
     std::vector<size_t> row_shifts;
-    ouster::sdk::core::img_t<uint32_t> signal;
-    ouster::sdk::core::img_t<uint16_t> reflectivity, near_ir;
     ouster::sdk::core::img_t<float> signal_image, reflectivity_image, nearir_image;
     ouster::sdk::core::img_t<uint8_t> red, green, blue;
 

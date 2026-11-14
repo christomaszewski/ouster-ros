@@ -262,6 +262,11 @@ if(BUILD_TESTING)
   target_link_libraries(${PROJECT_NAME}_image_processor_test
     ouster_ros_library
   )
+  add_executable(${PROJECT_NAME}_image_processor_benchmark EXCLUDE_FROM_ALL
+    test/image_processor_benchmark.cpp)
+  ament_target_dependencies(${PROJECT_NAME}_image_processor_benchmark
+    ${ouster_ros_library_deps})
+  target_link_libraries(${PROJECT_NAME}_image_processor_benchmark ouster_ros_library)
   ament_add_gtest(${PROJECT_NAME}_raw_packet_qos_test
     test/raw_packet_qos_test.cpp
     TIMEOUT 90

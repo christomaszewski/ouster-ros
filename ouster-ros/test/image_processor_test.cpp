@@ -13,6 +13,7 @@
 
 #include "../src/image_processor.h"
 #include "legacy_image_processor.h"
+#include "frozen_image_processor.h"
 
 namespace {
 using namespace ouster::sdk::core;
@@ -171,6 +172,46 @@ TEST(ImageDemandTest, FullResolutionImagesMatchAcrossExposureCycles) {
     }
 }
 
+TEST(ImageDemandTest, DirectFieldCastsMatchFrozenProcessorAcrossStorageTypes) {
+    const auto info = image_info(UDPProfileLidar::LEGACY, 64, 32);
+    const std::array<uint64_t, 12> integers{{0, 1, 255, 256, 65535, 65536,
+        65537, 16777215, 16777217, UINT32_MAX, uint64_t{UINT32_MAX} + 1, UINT64_MAX}};
+    for (const auto type : {ChanFieldType::UINT8, ChanFieldType::UINT16,
+            ChanFieldType::UINT32, ChanFieldType::UINT64, ChanFieldType::INT8,
+            ChanFieldType::INT16, ChanFieldType::INT32, ChanFieldType::INT64,
+            ChanFieldType::FLOAT32, ChanFieldType::FLOAT64}) {
+        for (bool masked : {false, true}) {
+            SCOPED_TRACE(static_cast<int>(type));
+            SCOPED_TRACE(masked);
+            MaskFile mask(info, masked);
+            Images expected, actual;
+            auto reference = ouster_ros::FrozenImageProcessor::create(info, "frame", mask.path, collect(expected));
+            auto candidate = ImageProcessor::create(info, "frame", mask.path, collect(actual));
+            LidarScan scan(std::make_shared<SensorInfo>(info), std::vector<FieldType>{
+                {ChanField::RANGE, ChanFieldType::UINT32}, {ChanField::SIGNAL, type},
+                {ChanField::REFLECTIVITY, type}, {ChanField::NEAR_IR, type}});
+            for (int frame = 0; frame < 24; ++frame) {
+                fill_field<uint32_t>(scan, ChanField::RANGE, frame, 1);
+                for (const auto& channel : {ChanField::SIGNAL, ChanField::REFLECTIVITY, ChanField::NEAR_IR})
+                    impl::visit_field(scan, channel, [&](auto field) {
+                        using Scalar = typename decltype(field)::Scalar;
+                        for (Eigen::Index i = 0; i < field.size(); ++i) {
+                            if constexpr (std::is_floating_point_v<Scalar>)
+                                // Stay within the defined float-to-integer range.
+                                field.data()[i] = static_cast<Scalar>((i * 31 + frame * 17) % 65000) + Scalar{0.75};
+                            else
+                                field.data()[i] = static_cast<Scalar>(integers[(i + frame) % integers.size()]);
+                        }
+                    });
+                reference(scan, 0, rclcpp::Time(frame));
+                candidate(scan, 0, rclcpp::Time(frame));
+                ASSERT_EQ(actual.size(), expected.size());
+                for (const auto& entry : expected) expect_image(actual.at(entry.first), entry.second);
+            }
+        }
+    }
+}
+
 TEST(ImageDemandTest, ZeroDemandAndUnavailableRgbNeverReadScanFields) {
     const auto info = image_info(UDPProfileLidar::LEGACY);
     int callbacks = 0;
@@ -249,6 +290,34 @@ TEST(ImageDemandTest, RgbOnlyDoesNotReadGrayscaleFields) {
         EXPECT_EQ(pixels[i + 1], 5);
         EXPECT_EQ(pixels[i + 2], 7);
     }
+}
+
+TEST(ImageDemandTest, RgbViewsAndNarrowingFallbackMatchFrozenBytes) {
+    const auto info = image_info(UDPProfileLidar::RNG19_RFL8_SIG16_NIR16_RGB16, 17, 32);
+    for (const auto type : {ChanFieldType::UINT8, ChanFieldType::UINT16, ChanFieldType::UINT32})
+        for (bool missing_green : {false, true})
+            for (bool masked : {false, true}) {
+                MaskFile mask(info, masked);
+                Images expected, actual;
+                auto demand = [](const std::string& field) { return field == ChanField::RGB; };
+                auto reference = ouster_ros::FrozenImageProcessor::create(info, "frame", mask.path, collect(expected), demand);
+                auto candidate = ImageProcessor::create(info, "frame", mask.path, collect(actual), demand);
+                std::vector<FieldType> fields{{ChanField::R_U8, type}, {ChanField::B_U8, type}};
+                if (!missing_green) fields.emplace_back(ChanField::G_U8, type);
+                LidarScan scan(std::make_shared<SensorInfo>(info), fields);
+                for (int frame = 0; frame < 5; ++frame) {
+                    for (const auto& field : fields)
+                        impl::visit_field(scan, field.name, [&](auto values) {
+                            using Scalar = typename decltype(values)::Scalar;
+                            for (Eigen::Index i = 0; i < values.size(); ++i)
+                                values.data()[i] = static_cast<Scalar>(i * 257 + frame * 65537);
+                        });
+                    reference(scan, 0, rclcpp::Time(frame));
+                    candidate(scan, 0, rclcpp::Time(frame));
+                    ASSERT_EQ(actual.size(), 1U);
+                    expect_image(actual.at(ChanField::RGB), expected.at(ChanField::RGB));
+                }
+            }
 }
 
 TEST(ImageDemandTest, PausesEachUnusedFamilyAndResumesWithoutReset) {
