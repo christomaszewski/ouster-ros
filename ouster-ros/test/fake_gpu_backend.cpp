@@ -6,13 +6,15 @@
 // CPU-only ownership/lifecycle oracle for the ROS loader; never a GPU fallback.
 // Stats: creates, prepares, runs, releases, destroys, invalid transitions.
 static uint64_t stats[6]{};
+static bool corrupt_output=false;
 struct ouster_gpu_handle {
     ouster_gpu_config c;std::vector<float> d,o;std::vector<int32_t> shifts;
     uint8_t* output=nullptr;size_t bytes=0;
 };
 struct alignas(16) PointBytes {float x,y,z,w,intensity;uint32_t t;uint16_t reflectivity,ring,ambient,pad30;uint32_t range,pad36,pad40,pad44;};
 static_assert(sizeof(PointBytes)==48);
-extern "C" void ouster_gpu_test_reset(){std::fill(std::begin(stats),std::end(stats),0);}
+extern "C" void ouster_gpu_test_reset(){std::fill(std::begin(stats),std::end(stats),0);corrupt_output=false;}
+extern "C" void ouster_gpu_test_corrupt(int enabled){corrupt_output=enabled!=0;}
 extern "C" void ouster_gpu_test_stats(uint64_t* out){std::copy(std::begin(stats),std::end(stats),out);}
 extern "C" int ouster_gpu_create(const ouster_gpu_config* c,ouster_gpu_handle** out,char*,size_t) {
     if(!c||!out||c->abi_version!=OUSTER_GPU_ABI_VERSION||c->struct_size!=sizeof(*c)||c->ownership!=OUSTER_GPU_REGISTERED_OUTPUT)return 1;
@@ -31,7 +33,7 @@ extern "C" int ouster_gpu_run(ouster_gpu_handle* h,const ouster_gpu_scan* s,uint
         if(r<=h->c.min_range||r>=h->c.max_range) {uint32_t q=0x7fc00000;std::memcpy(&p.x,&q,4);p.y=p.z=p.x;}else {float f=float(r);p.x=std::fma(f,h->d[i*3],h->o[i*3]);p.y=std::fma(f,h->d[i*3+1],h->o[i*3+1]);p.z=std::fma(f,h->d[i*3+2],h->o[i*3+2]);}
         p.w=1;p.intensity=float(s->signal[i]);uint64_t ts=s->timestamps[source];p.t=uint32_t(ts>s->scan_ts?ts-s->scan_ts:0);p.reflectivity=s->reflectivity[i];p.ring=uint16_t(row);p.ambient=s->near_ir[i];p.range=r;
         *dense&=!(std::isnan(p.x)||std::isnan(p.y)||std::isnan(p.z));std::memcpy(out+(size_t(row)*h->c.crop_width+col)*48,&p,48);
-    }++stats[2];return 0;
+    }if(corrupt_output&&bytes)out[0]^=1;++stats[2];return 0;
 }
 extern "C" int ouster_gpu_release(ouster_gpu_handle* h,char*,size_t) {
     if(h&&h->output){volatile uint8_t still_alive=*h->output;(void)still_alive;h->output=nullptr;++stats[3];}return 0;

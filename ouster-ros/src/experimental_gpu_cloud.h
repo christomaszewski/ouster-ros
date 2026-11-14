@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdlib>
+#include <charconv>
+#include <chrono>
 #include <cstring>
 #include <dlfcn.h>
 #include <iostream>
@@ -23,6 +25,7 @@ class ExperimentalGpuCloud {
     size_t bytes_, pixels_, columns_;
     bool required_;
     uint64_t frames_ = 0, bindings_ = 0;
+    double first_compute_ms_ = -1;
     template<class T> T symbol(const char* name) {
         dlerror();void* p=dlsym(library_,name);const char* error=dlerror();
         if(error||!p)throw std::runtime_error(std::string("GPU symbol missing: ")+name);
@@ -36,6 +39,15 @@ public:
     static const char* library_path() {const char* p=std::getenv("OUSTER_GPU_CLOUD_LIBRARY");return p&&*p?p:nullptr;}
     static bool required() {const char* p=std::getenv("OUSTER_GPU_CLOUD_REQUIRE");return p&&std::strcmp(p,"1")==0;}
     static bool requested() {return library_path()||required();}
+    static unsigned validation_frames() {
+        const char* p=std::getenv("OUSTER_GPU_CLOUD_VALIDATE_FRAMES");
+        if(!p||!*p)return 0;
+        unsigned count=0;const char* end=p+std::strlen(p);
+        const auto result=std::from_chars(p,end,count);
+        if(result.ec!=std::errc{}||result.ptr!=end||count>32)
+            throw std::invalid_argument("OUSTER_GPU_CLOUD_VALIDATE_FRAMES must be an integer from 0 to 32");
+        return count;
+    }
     ExperimentalGpuCloud(const ouster_gpu_config& config)
         :bytes_(size_t(config.crop_width)*config.height*48),pixels_(size_t(config.width)*config.height),columns_(config.width),required_(required()) {
         try {
@@ -60,6 +72,7 @@ public:
     ExperimentalGpuCloud& operator=(const ExperimentalGpuCloud&)=delete;
     bool enabled() const {return handle_!=nullptr;}
     size_t output_bytes() const {return bytes_;}
+    double first_compute_ms() const {return first_compute_ms_;}
     void release_output() {
         if(!handle_||!registered_)return;char error[512]{};
         if(release_(handle_,error,sizeof(error)))throw std::runtime_error(std::string("GPU output release: ")+error);
@@ -71,6 +84,9 @@ public:
     bool compute(const ouster::sdk::core::LidarScan& scan,uint64_t scan_ts,
                  sensor_msgs::msg::PointCloud2& message,bool& dense) {
         if(!handle_)return false;
+        const bool first = frames_ == 0;
+        const auto first_start = first ? std::chrono::steady_clock::now()
+                                      : std::chrono::steady_clock::time_point{};
         if(message.data.size()!=bytes_)throw std::runtime_error("GPU output schema/size changed");
         if(!registered_) {
             char error[512]{};
@@ -92,7 +108,11 @@ public:
         char error[512]{};int result=0;
         if(run_(handle_,&input,message.data.data(),message.data.size(),&result,error,sizeof(error)))
             throw std::runtime_error(std::string("GPU execution failed; stopping experimental path: ")+error);
-        dense=result!=0;if(++frames_==1)std::cerr<<"EXPERIMENTAL_GPU_CLOUD_ACTIVE synchronous=1 native_input_copy=1 output_copy=0\n";
+        dense=result!=0;++frames_;
+        if(first) {
+            first_compute_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-first_start).count();
+            std::cerr<<"EXPERIMENTAL_GPU_CLOUD_ACTIVE synchronous=1 native_input_copy=1 output_copy=0 first_compute_ms="<<first_compute_ms_<<'\n';
+        }
         return true;
     }
 };

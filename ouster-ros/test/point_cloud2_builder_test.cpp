@@ -693,6 +693,14 @@ struct FakeGpuStats {
     ~FakeGpuStats(){dlclose(library);}
     std::array<uint64_t,6> values(){std::array<uint64_t,6> out{};read(out.data());return out;}
 };
+struct GpuShadowEnv {
+    std::string previous;bool existed=false;
+    explicit GpuShadowEnv(const char* value) {
+        if(const char* p=std::getenv("OUSTER_GPU_CLOUD_VALIDATE_FRAMES")){previous=p;existed=true;}
+        if(value)setenv("OUSTER_GPU_CLOUD_VALIDATE_FRAMES",value,1);else unsetenv("OUSTER_GPU_CLOUD_VALIDATE_FRAMES");
+    }
+    ~GpuShadowEnv(){if(existed)setenv("OUSTER_GPU_CLOUD_VALIDATE_FRAMES",previous.c_str(),1);else unsetenv("OUSTER_GPU_CLOUD_VALIDATE_FRAMES");}
+};
 }
 
 TEST(ExperimentalGpuCloud, NativeBytesRetentionReuseAndShutdown) {
@@ -772,4 +780,48 @@ TEST(ExperimentalGpuCloud, ReleasePrecedesExplicitBufferGrowth) {
         EXPECT_EQ(snapshot,message.data);
     }
     const auto s=stats.values();EXPECT_EQ(s[1],2u);EXPECT_EQ(s[3],2u);EXPECT_EQ(s[4],1u);EXPECT_EQ(s[5],0u);
+}
+
+TEST(ExperimentalGpuCloud, ShadowStopsAfterConfiguredFrames) {
+    FakeGpuStats stats;GpuTestEnv enabled(OUSTER_TEST_GPU_BACKEND_PATH,"1");
+    const auto info=test_info(UDPProfileLidar::LEGACY);
+    for(const char* count:{"0","2"}) {
+        GpuShadowEnv shadow(count);unsigned oracle_calls=0;
+        using Processor=PointCloudProcessor<Point,PointCloud2Builder<Point>,CartesianPointAccessor>;
+        Processor::ScanToCloudFn oracle=[&](auto& cloud,const auto& points,uint64_t ts,const auto& scan,const auto& shifts,int) {
+            ++oracle_calls;Point_LEGACY staging;
+            scan_to_cloud_f<Profile_LEGACY.size(),Profile_LEGACY>(cloud,staging,points,ts,scan,shifts,true,true,1,{});
+        };
+        auto processor=Processor::create(info,"os_sensor",true,0,UINT32_MAX,1,"",oracle,[](auto){},{},true,true,true);
+        LidarScan scan(WIDTH,HEIGHT,UDPProfileLidar::LEGACY);
+        for(int i=0;i<7;i++){fill_scan(scan,i);processor(scan,SCAN_TS,rclcpp::Time(SCAN_TS+i));}
+        EXPECT_EQ(oracle_calls,std::stoul(count));
+    }
+    EXPECT_EQ(stats.values()[2],14u);
+}
+
+TEST(ExperimentalGpuCloud, ShadowRejectsCorruptionBeforePublishing) {
+    FakeGpuStats stats;GpuTestEnv enabled(OUSTER_TEST_GPU_BACKEND_PATH,"1");GpuShadowEnv shadow("1");
+    const auto info=test_info(UDPProfileLidar::LEGACY);unsigned callbacks=0;
+    auto processor=PointCloudProcessorFactory::create_point_cloud_processor("original",info,"os_sensor",true,true,true,0,UINT32_MAX,1,"",[&](auto){++callbacks;},false,true);
+    auto corrupt=reinterpret_cast<void(*)(int)>(dlsym(stats.library,"ouster_gpu_test_corrupt"));ASSERT_NE(corrupt,nullptr);corrupt(1);
+    LidarScan scan(WIDTH,HEIGHT,UDPProfileLidar::LEGACY);fill_scan(scan,0);
+    EXPECT_THROW(processor(scan,SCAN_TS,rclcpp::Time(SCAN_TS)),std::runtime_error);
+    EXPECT_EQ(callbacks,0u);corrupt(0);
+}
+
+TEST(ExperimentalGpuCloud, ShadowCountValidationAndCpuIgnore) {
+    FakeGpuStats stats;GpuTestEnv enabled(OUSTER_TEST_GPU_BACKEND_PATH,"1");const auto info=test_info(UDPProfileLidar::LEGACY);
+    auto make=[&](){return PointCloudProcessorFactory::create_point_cloud_processor("original",info,"os_sensor",true,true,true,0,UINT32_MAX,1,"",[](auto){},false,true);};
+    for(const char* value:{"-1","33","abc","2x"," 2","4294967296"}) {
+        GpuShadowEnv shadow(value);
+        EXPECT_THROW(make(),std::invalid_argument);
+    }
+    for(const char* value:{"","0","32"}) {
+        GpuShadowEnv shadow(value);
+        EXPECT_NO_THROW(make());
+    }
+    {GpuTestEnv cpu(nullptr,"0");GpuShadowEnv shadow("not-an-integer");
+        EXPECT_NO_THROW(make());
+    }
 }

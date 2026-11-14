@@ -94,6 +94,8 @@ class PointCloudProcessor {
                     throw std::invalid_argument("Required GPU path needs an explicitly immutable output callback and original LEGACY single-return organized destaggered unmasked clouds with rows_step=1");
                 std::cerr << "EXPERIMENTAL_GPU_CLOUD_CPU_FALLBACK reason=unsupported_cloud_configuration\n";
             } else {
+                gpu_shadow_total_ = ExperimentalGpuCloud::validation_frames();
+                gpu_shadow_remaining_ = gpu_shadow_total_;
                 ouster_gpu_config config{OUSTER_GPU_ABI_VERSION, sizeof(ouster_gpu_config),
                     static_cast<uint32_t>(info.format.columns_per_frame),
                     static_cast<uint32_t>(info.format.pixels_per_column),
@@ -181,11 +183,43 @@ class PointCloudProcessor {
                     cloud.prepare(true);
                     bool dense = false;
                     gpu_complete = gpu_->compute(lidar_scan, scan_ts, *pc_msgs[i], dense);
-                    if (gpu_complete) cloud.finish(dense);
+                    if (gpu_complete) {
+                        cloud.finish(dense);
+                        if (gpu_shadow_remaining_) {
+                            sensor_msgs::msg::PointCloud2 expected;
+                            OutputCloud oracle_cloud(pc_msgs[i]->width, pc_msgs[i]->height);
+                            oracle_cloud.attach(expected);
+                            compute_cpu(oracle_cloud, lidar_scan, scan_ts, i);
+                            const auto& actual = *pc_msgs[i];
+                            if (expected.width != actual.width || expected.height != actual.height ||
+                                expected.point_step != actual.point_step || expected.row_step != actual.row_step ||
+                                expected.fields != actual.fields || expected.is_bigendian != actual.is_bigendian ||
+                                expected.is_dense != actual.is_dense || expected.data != actual.data) {
+                                std::cerr << "EXPERIMENTAL_GPU_CLOUD_SHADOW_MISMATCH before_publish=1\n";
+                                throw std::runtime_error("GPU cloud differs from same-scan CPU oracle; refusing publication");
+                            }
+                            if (--gpu_shadow_remaining_ == 0)
+                                std::cerr << "EXPERIMENTAL_GPU_CLOUD_SHADOW_PASS frames=" << gpu_shadow_total_
+                                          << " bytes=" << actual.data.size()
+                                          << " first_gpu_compute_ms=" << gpu_->first_compute_ms() << '\n';
+                        }
+                    }
                 }
             }
-            if (!gpu_complete) {
-            auto range_channel = i == 0 ? ChanField::RANGE : ChanField::RANGE2;
+            if (!gpu_complete) compute_cpu(cloud, lidar_scan, scan_ts, i);
+
+            if constexpr (std::is_same_v<OutputCloud, Cloud<PointT>>)
+                pcl_toROSMsg(cloud, *pc_msgs[i]);
+            pc_msgs[i]->header.stamp = msg_ts;
+            pc_msgs[i]->header.frame_id = frame;
+        }
+
+        if (post_processing_fn) post_processing_fn(pc_msgs);
+    }
+
+    void compute_cpu(OutputCloud& target, const ouster::sdk::core::LidarScan& lidar_scan,
+                     uint64_t scan_ts, int return_index) {
+            auto range_channel = return_index == 0 ? ChanField::RANGE : ChanField::RANGE2;
             auto range = lidar_scan.field<uint32_t>(range_channel);
             if constexpr (std::is_same_v<Coordinates, ouster::sdk::core::PointCloudXYZf>) {
                 if (crop_.width) {
@@ -200,26 +234,17 @@ class PointCloudProcessor {
                                        std::numeric_limits<float>::quiet_NaN());
                 }
 
-                scan_to_cloud_fn(cloud, points, scan_ts, lidar_scan,
-                                            pixel_shift_by_row, i);
+                scan_to_cloud_fn(target, points, scan_ts, lidar_scan,
+                                            pixel_shift_by_row, return_index);
             } else {
                 // The lazy accessor computes only the slots consumed by packing,
                 // retaining the same float expressions and range-mask arithmetic.
                 Coordinates coordinates(range.data(), range.size(), lut_direction.data(),
                                         lut_offset.data(), min_range_, max_range_,
                                         mask.size() ? mask.data() : nullptr);
-                scan_to_cloud_fn(cloud, coordinates, scan_ts, lidar_scan,
-                                 pixel_shift_by_row, i);
+                scan_to_cloud_fn(target, coordinates, scan_ts, lidar_scan,
+                                 pixel_shift_by_row, return_index);
             }
-            }
-
-            if constexpr (std::is_same_v<OutputCloud, Cloud<PointT>>)
-                pcl_toROSMsg(cloud, *pc_msgs[i]);
-            pc_msgs[i]->header.stamp = msg_ts;
-            pc_msgs[i]->header.frame_id = frame;
-        }
-
-        if (post_processing_fn) post_processing_fn(pc_msgs);
     }
 
    public:
@@ -267,6 +292,7 @@ class PointCloudProcessor {
     CloudColumnWindow crop_;
     bool crop_destagger_;
     int rows_step_;
+    unsigned gpu_shadow_remaining_ = 0, gpu_shadow_total_ = 0;
     // Destroy/unregister before pc_msgs and its data allocations are destroyed.
     std::unique_ptr<ExperimentalGpuCloud> gpu_;
 };
